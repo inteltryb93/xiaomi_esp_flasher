@@ -73,7 +73,7 @@ xiaomi_esp_flasher:
   identify_interval: 6h                   # re-identify to keep versions fresh
   remote_manifest: https://raw.githubusercontent.com/pvvx/ATC_MiThermometer/master/firmware.json  # optional
   fwstore_size: 0x40000                   # flash partition for images (128 KiB slots)
-  web_assets: remote                      # GUI from https://cdn.jsdelivr.net/gh/inteltryb93/xiaomi_esp_flasher@main/web/
+  web_assets: remote                      # GUI from jsDelivr; "@main" is pinned to the built commit automatically
   bundle_firmware: false                  # true: compile firmware/*.bin into the image (offline OTA source)
   devices:                                # thermometers that get Home Assistant entities
     - mac_address: "A4:C1:38:4A:E8:8C"
@@ -166,6 +166,9 @@ Send Default Config To All Thermometers.
   page warnings; never bypass it.
 * **ACTIVATION_REQUIRED**: original firmware 2.1.1_0159 (new B1.6 batches) needs the Mi-Home token; enter token
   and bind key on the Firmware tab (advanced) to use login instead of registration.
+* **A GUI button does nothing / OTA Log stays silent after a click**: the browser or the CDN served an old
+  `app.js`. Since the asset URL is pinned to the commit that was built (`@<sha>`), rebuild + flash after every
+  `web/` change (commit and push first – the CDN fetches from GitHub) and hard-refresh the page (Ctrl+F5).
 * **Connection reset / GUI unreachable**: sockets exhausted – the component reserves 6 lwIP sockets; keep at
   most a few browser tabs open.
 * **Slow OTA (~1 kB/s)**: MTU 23 and the peripheral's connection interval; ~90 s for an 86 KB image is normal.
