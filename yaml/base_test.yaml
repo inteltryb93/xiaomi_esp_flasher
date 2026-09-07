@@ -1,0 +1,31 @@
+# Phase 1/2 smoke test: WiFi + HTTP + BLE scan on the ESP32-C3 (no custom component yet)
+esphome:
+  name: xiaomi-esp-flasher
+  friendly_name: Xiaomi ESP Flasher
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Xiaomi ESP Flasher AP"
+
+web_server:
+  port: 80
+  version: 3
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true

@@ -1,0 +1,102 @@
+# Xiaomi ESP Flasher – ESP32-C3 BLE gateway / flasher for pvvx ATC_MiThermometer devices
+substitutions:
+  name: xiaomi-esp-flasher
+  friendly_name: Xiaomi ESP Flasher
+  test_device_mac: "A4:C1:38:4A:E8:8C"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.1.0
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [xiaomi_esp_flasher]
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+  # Maximum debug level for the project components (test requirement). The BLE stack tags are capped at DEBUG:
+  # at VERY_VERBOSE they log every advertisement/GATT event synchronously and starve the single-core ESP32-C3
+  # (observed: GATT connect timeouts, HTTP stalls). Lower everything to DEBUG/INFO for production use.
+  level: VERY_VERBOSE
+  logs:
+    esp32_ble: DEBUG
+    esp32_ble_tracker: DEBUG
+    esp32_ble_client: DEBUG
+    esp32_ble_client.service: DEBUG
+    esp32_ble_client.characteristic: DEBUG
+    wifi: DEBUG
+    api: DEBUG
+    api.connection: DEBUG
+    api.service: DEBUG
+    scheduler: DEBUG
+    sensor: DEBUG
+    text_sensor: DEBUG
+    binary_sensor: DEBUG
+    web_server_idf: DEBUG
+    mdns: DEBUG
+    sntp: DEBUG
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  ap:
+    ssid: "Xiaomi ESP Flasher AP"
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Warsaw
+
+web_server_base:
+
+esp32_ble:
+  max_connections: 1   # one sequential GATT connection – saves Bluedroid memory on the ESP32-C3
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    interval: 320ms
+    window: 60ms
+    continuous: true
+
+xiaomi_esp_flasher:
+  id: flasher
+  test_device_mac: ${test_device_mac}
+  auto_identify: true
+  identify_interval: 6h
+  # Uncomment to allow fetching firmware.json / images from GitHub (HTTPS, adds ~90 KB flash):
+  remote_manifest: https://raw.githubusercontent.com/pvvx/ATC_MiThermometer/master/firmware.json
+  status:
+    name: Flasher Status
+  last_error:
+    name: Flasher Last Error
+  device_count:
+    name: Detected Thermometers
+  updates_available:
+    name: Thermometers Needing Update
+  ota_progress:
+    name: OTA Progress
+  ota_active:
+    name: OTA Active
+  scan_button:
+    name: BLE Scan
+  update_all_button:
+    name: Update All Thermometers
+  check_online_button:
+    name: Check Firmware Online
+  devices:
+    - mac_address: ${test_device_mac}
+      name: Living Room

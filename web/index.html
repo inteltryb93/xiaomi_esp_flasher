@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xiaomi ESP Flasher</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">&#x1F321;</span> Xiaomi ESP Flasher</div>
+  <nav>
+    <a href="#/" data-nav="devices">Devices</a>
+    <a href="#/firmware" data-nav="firmware">Firmware</a>
+    <a href="#/diagnostics" data-nav="diagnostics">Diagnostics</a>
+  </nav>
+  <div class="right">
+    <span id="session-badge" class="badge">IDLE</span>
+    <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">&#9788;</button>
+  </div>
+</header>
+
+<main id="view"></main>
+
+<section class="logpanel" id="logpanel">
+  <div class="loghead">
+    <strong>OTA Log</strong>
+    <span id="conn-state" class="muted">connecting…</span>
+    <span class="grow"></span>
+    <button class="small" id="log-clear">Clear</button>
+    <button class="small" id="log-toggle">Hide</button>
+  </div>
+  <pre id="log"></pre>
+</section>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-box" id="modal-box"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<!-- Templates -->
+<template id="tpl-devices">
+  <div class="toolbar">
+    <button class="primary" id="btn-scan">Scan</button>
+    <button id="btn-refresh">Refresh</button>
+    <button id="btn-update-all" class="warn">Update all</button>
+    <button id="btn-add">Add MAC…</button>
+    <span class="grow"></span>
+    <span class="muted" id="dev-count"></span>
+  </div>
+  <div class="tablewrap">
+  <table class="devices">
+    <thead><tr>
+      <th>Device</th><th>MAC</th><th>Model</th><th>HW</th><th>Firmware</th><th>Temp</th><th>Hum</th><th>Batt</th><th>Signal</th><th>Update</th><th>Status</th>
+    </tr></thead>
+    <tbody id="dev-rows"></tbody>
+  </table>
+  </div>
+  <p class="muted">Devices appear automatically while the ESP32 scans. Click a row for details. Devices not identified yet are identified automatically one by one when <em>auto_identify</em> is enabled.</p>
+</template>
+
+<template id="tpl-device">
+  <div class="toolbar">
+    <a href="#/" class="linkbtn">&larr; Devices</a>
+    <h2 id="d-title"></h2>
+    <span class="grow"></span>
+    <button id="d-identify" class="primary">Identify / Refresh</button>
+    <button id="d-alias">Rename</button>
+    <button id="d-forget" class="danger">Forget</button>
+  </div>
+  <div class="tabs" id="d-tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="firmware">Firmware</button>
+    <button data-tab="config">Configure</button>
+    <button data-tab="diag">Diagnostics</button>
+  </div>
+  <section class="tab" data-tab="overview">
+    <div class="cards">
+      <div class="card"><h3>Device Information</h3><dl id="d-info"></dl></div>
+      <div class="card"><h3>Measurements</h3><dl id="d-meas"></dl></div>
+      <div class="card"><h3>Firmware</h3><dl id="d-fw"></dl>
+        <div class="btnrow"><button id="d-update" class="big warn">Update</button><button id="d-config-go" class="big">Configure</button><button id="d-diag-go" class="big">Diagnostics</button></div>
+      </div>
+    </div>
+  </section>
+  <section class="tab hidden" data-tab="firmware">
+    <div class="card">
+      <h3>Firmware update</h3>
+      <dl id="d-fwcheck"></dl>
+      <label>Target firmware <select id="d-fwsel"></select></label>
+      <div class="btnrow">
+        <button id="d-flash" class="big danger" disabled>Update firmware</button>
+        <button id="d-activate" class="big">Do Activation (stock firmware)</button>
+      </div>
+      <details><summary>Mi login with known token/bindkey (advanced)</summary>
+        <label>Token (24 hex) <input id="d-token" maxlength="24"></label>
+        <label>Bind key (32 hex) <input id="d-bindkey" maxlength="32"></label>
+      </details>
+      <p class="muted">The compatibility check must pass before the button is enabled. A confirmation screen follows.</p>
+    </div>
+  </section>
+  <section class="tab hidden" data-tab="config">
+    <div class="card" id="cfg-card">
+      <div class="toolbar">
+        <button id="cfg-read" class="primary">Read Config</button>
+        <button id="cfg-defaults">Set Defaults</button>
+        <button id="cfg-send" class="warn">Send Config</button>
+        <button id="cfg-device-defaults" class="danger small">Reset device to factory defaults</button>
+      </div>
+      <p id="cfg-note" class="muted"></p>
+      <div class="tabs sub" id="cfg-tabs">
+        <button data-ctab="general" class="active">General</button>
+        <button data-ctab="display">Display</button>
+        <button data-ctab="advertising">Advertising</button>
+        <button data-ctab="comfort">Comfort</button>
+        <button data-ctab="time">Time</button>
+        <button data-ctab="security">Security</button>
+        <button data-ctab="advanced">Advanced</button>
+      </div>
+      <form id="cfg-form" onsubmit="return false">
+        <div class="ctab" data-ctab="general">
+          <label>Temperature offset (°C) <input type="number" step="0.01" id="c-temp_offset"></label>
+          <label>Humidity offset (%) <input type="number" step="0.01" id="c-humi_offset"></label>
+          <label>Measure interval (× advertising interval, 1..25) <input type="number" min="1" max="255" id="c-measure_interval"></label>
+          <label>Averaging to flash memory (× measure interval, 0 = off) <input type="number" min="0" max="255" id="c-av_meas_mem"></label>
+          <label><input type="checkbox" id="c-tx_measures"> Tx measures when connected</label>
+          <label><input type="checkbox" id="c-lp_measures"> Sensor in low-power mode</label>
+        </div>
+        <div class="ctab hidden" data-ctab="display">
+          <label>Temperature unit <select id="c-temp_fahrenheit"><option value="0">°C</option><option value="1">°F</option></select></label>
+          <label>Smiley <select id="c-smiley">
+            <option value="0">off</option><option value="1">^_^</option><option value="2">-^-</option><option value="3">ooo</option>
+            <option value="4">( )</option><option value="5">(^_^) happy</option><option value="6">(-^-) sad</option><option value="7">(ooo)</option></select></label>
+          <label><input type="checkbox" id="c-comfort_smiley"> Comfort mode (smiley follows comfort parameters)</label>
+          <label><input type="checkbox" id="c-show_battery"> Show battery</label>
+          <label><input type="checkbox" id="c-show_clock"> Show clock (rotates with temperature/humidity)</label>
+          <label><input type="checkbox" id="c-screen_off"> Screen off (fw ≥ 4.3)</label>
+          <label>Minimum LCD refresh (s, 0.5..12.75) <input type="number" step="0.05" min="0.5" max="12.75" id="c-lcd_tint"></label>
+        </div>
+        <div class="ctab hidden" data-ctab="advertising">
+          <label>Advertising type <select id="c-advertising_type"></select></label>
+          <label>Advertising interval (ms, step 62.5) <input type="number" step="62.5" min="62.5" max="10000" id="c-advertising_interval"></label>
+          <label><input type="checkbox" id="c-adv_flags"> AdFlags (third-party software support)</label>
+          <label><input type="checkbox" id="c-adv_crypto"> Encrypted beacon (bindkey)</label>
+          <label><input type="checkbox" id="c-bt5phy"> BT5+ PHY</label>
+          <label><input type="checkbox" id="c-longrange"> LE Long Range (Coded PHY)</label>
+          <label>RF TX power <select id="c-rf_tx_power"></select></label>
+          <label>Connect latency (ms, step 20) <input type="number" step="20" min="0" max="1000" id="c-connect_latency"></label>
+        </div>
+        <div class="ctab hidden" data-ctab="comfort">
+          <label>Temperature low (°C) <input type="number" step="0.01" id="c-cmf_temp_lo"></label>
+          <label>Temperature high (°C) <input type="number" step="0.01" id="c-cmf_temp_hi"></label>
+          <label>Humidity low (%) <input type="number" step="0.01" id="c-cmf_humi_lo"></label>
+          <label>Humidity high (%) <input type="number" step="0.01" id="c-cmf_humi_hi"></label>
+        </div>
+        <div class="ctab hidden" data-ctab="time">
+          <dl id="c-time"></dl>
+          <div class="btnrow"><button id="c-settime" class="primary">Set time (ESP32 clock)</button></div>
+        </div>
+        <div class="ctab hidden" data-ctab="security">
+          <label>Device name (1..18 chars, empty = default) <input id="c-devname" maxlength="18"></label>
+          <div class="btnrow"><button id="c-setname">Set name</button></div>
+          <label>PIN code (000000 disables) <input id="c-pin" maxlength="6" pattern="[0-9]{6}"></label>
+          <div class="btnrow"><button id="c-setpin" class="danger">Set PIN</button></div>
+          <p class="muted">Warning: a forgotten PIN can only be removed with a hardware flasher.</p>
+        </div>
+        <div class="ctab hidden" data-ctab="advanced">
+          <h4>Sensor calibration (fw ≥ 4.7): T = RegT·Tk/65536 + Tz</h4>
+          <label>Temperature slope Tk (×0.01) <input type="number" id="c-temp_k"></label>
+          <label>Temperature zero Tz (×0.01 °C) <input type="number" id="c-temp_z"></label>
+          <label>Humidity slope Hk (×0.01) <input type="number" id="c-humi_k"></label>
+          <label>Humidity zero Hz (×0.01 %) <input type="number" id="c-humi_z"></label>
+          <h4>Trigger / reed switch</h4>
+          <label>Temperature threshold (°C) <input type="number" step="0.01" id="c-trg_temp_thr"></label>
+          <label>Humidity threshold (%) <input type="number" step="0.01" id="c-trg_humi_thr"></label>
+          <label>Temperature hysteresis (°C) <input type="number" step="0.01" id="c-trg_temp_hst"></label>
+          <label>Humidity hysteresis (%) <input type="number" step="0.01" id="c-trg_humi_hst"></label>
+          <label>Reed switch mode <select id="c-rds_type"><option value="0">None</option><option value="1">Switch</option><option value="2">Counter</option><option value="3">Connect</option></select></label>
+          <label><input type="checkbox" id="c-rds_invert"> Invert RS event</label>
+          <label>RS report interval (s) <input type="number" id="c-rds_rpint"></label>
+          <div class="btnrow"><button id="c-reboot" class="danger">Reboot device</button></div>
+          <label><input type="checkbox" id="c-send-advanced"> include sensor calibration and trigger blocks in Send Config</label>
+        </div>
+      </form>
+    </div>
+  </section>
+  <section class="tab hidden" data-tab="diag">
+    <div class="card"><h3>Diagnostics</h3><pre id="d-raw"></pre></div>
+  </section>
+</template>
+
+<template id="tpl-firmware">
+  <div class="toolbar">
+    <h2>Firmware repository</h2><span class="grow"></span>
+    <button id="fw-check" class="primary">Check online (GitHub)</button>
+  </div>
+  <div class="tablewrap"><table><thead><tr><th>ID</th><th>File</th><th>Version</th><th>Kind</th><th>Size</th><th>CRC32</th><th>Hardware</th><th>Source</th></tr></thead><tbody id="fw-rows"></tbody></table></div>
+  <div class="card">
+    <h3>Upload your own .bin</h3>
+    <p class="muted">The file is validated on the ESP32 (Telink header, size pointer, CRC32) and stored in flash. You must declare the hardware ids it is built for; flashing still requires the confirmation screen.</p>
+    <label>File <input type="file" id="fw-file" accept=".bin"></label>
+    <label>Version label <input id="fw-version" placeholder="e.g. 5.9"></label>
+    <label>Hardware ids (comma separated pvvx ids, default: all LYWSD03MMC) <input id="fw-hw" placeholder="0,3,4,5,10,14"></label>
+    <div class="btnrow"><button id="fw-upload" class="warn">Upload to ESP32</button></div>
+    <div id="fw-upload-result" class="muted"></div>
+  </div>
+</template>
+
+<template id="tpl-diagnostics">
+  <div class="toolbar"><h2>Diagnostics</h2><span class="grow"></span><button id="diag-refresh">Refresh</button></div>
+  <div class="card"><dl id="diag-list"></dl></div>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>
