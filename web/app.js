@@ -155,6 +155,12 @@
       const ok = await modal(`<h3>Update all</h3><p>The following devices will be updated <b>sequentially</b>, each one verified before the next starts:</p><ul>${list.map((d) => `<li>${esc(d.display_name)} (${esc(d.mac)}): ${esc(d.firmware)} → ${esc(d.latest_version)}</li>`).join('')}</ul><p class="warnbox">Do not move the devices out of BLE range during the update.</p>`, [{ label: 'Cancel', value: false }, { label: 'Start updates', value: true, cls: 'danger' }]);
       if (ok) { await post('/queue/all'); toast('Update queue started'); }
     };
+    $q('#btn-defaults-all').onclick = async () => {
+      const list = S.devices.filter((d) => d.identified && d.firmware_kind === 'pvvx custom' && d.status !== 'offline');
+      if (!list.length) return toast('No reachable pvvx device', 'err');
+      const ok = await modal(`<h3>Send default config to all</h3><p>Sends <code>56</code> (CMD_ID_CFG_DEF – factory configuration of the pvvx firmware) to each device <b>sequentially</b> and reads the configuration back:</p><ul>${list.map((d) => `<li>${esc(d.display_name)} (${esc(d.mac)}), firmware ${esc(d.firmware)}</li>`).join('')}</ul><p class="warnbox">All custom settings (advertising type/interval, display, offsets in the main block, comfort mode …) return to the firmware defaults. Device names are not changed.</p>`, [{ label: 'Cancel', value: false }, { label: 'Send defaults to all', value: true, cls: 'danger' }]);
+      if (ok) { await post('/queue/defaults'); toast('Default config queued for all devices'); }
+    };
     $q('#btn-add').onclick = async () => {
       const mac = prompt('MAC address of the thermometer (diagnostic manual add):', 'A4:C1:38:');
       if (mac && /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) { await post('/device/' + mac + '/add'); refreshDevices(); }

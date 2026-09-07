@@ -568,6 +568,7 @@ bool XiaomiEspFlasher::request_flash(uint64_t mac, const std::string &fw_id, boo
 
 void XiaomiEspFlasher::request_scan() { this->scan_requested_ = true; this->enable_loop_soon_any_context(); }
 void XiaomiEspFlasher::request_update_all() { this->update_all_requested_ = true; this->enable_loop_soon_any_context(); }
+void XiaomiEspFlasher::request_defaults_all() { this->defaults_all_requested_ = true; this->enable_loop_soon_any_context(); }
 void XiaomiEspFlasher::request_check_online() { this->check_online_requested_ = true; this->enable_loop_soon_any_context(); }
 
 void XiaomiEspFlasher::forget_device(uint64_t mac) {
@@ -686,6 +687,28 @@ void XiaomiEspFlasher::loop() {
     }
     for (auto &m : skipped) this->logf("Update all: skipping %s (not seen recently)", m.c_str());
     this->logf("Update queue: %u device(s)", (unsigned) queued);
+  }
+  if (this->defaults_all_requested_.exchange(false)) {
+    // "Send default config to all": one SET_DEFAULTS job per reachable pvvx device (sequential, each read back)
+    std::vector<std::string> queued, skipped;
+    {
+      LockGuard g(this->mutex_);
+      for (auto &d : this->devices_) {
+        bool in_range = d->last_seen_ms && (millis() - d->last_seen_ms) < 600000 && d->status != DeviceStatus::OFFLINE;
+        bool custom = d->identified && d->hw.kind == FirmwareKind::CUSTOM_PVVX;
+        if (custom && in_range && this->job_queue_.size() < 16) {
+          Job j;
+          j.type = JobType::SET_DEFAULTS;
+          j.mac = d->address;
+          this->job_queue_.push_back(j);
+          queued.push_back(d->mac);
+        } else if (d->identified) {
+          skipped.push_back(d->mac);
+        }
+      }
+    }
+    for (auto &m : skipped) this->logf("Default config: skipping %s (not pvvx firmware or not seen recently)", m.c_str());
+    this->logf("Default config queued for %u device(s)", (unsigned) queued.size());
   }
 #ifdef USE_XIAOMI_FLASHER_REMOTE
   if (this->check_online_requested_.exchange(false) && !this->session_active()) {
@@ -1890,6 +1913,7 @@ void XiaomiFlasherButton::press_action() {
     case ButtonAction::REBOOT: { Job j; j.type = JobType::REBOOT; j.mac = this->mac_; std::string e; this->parent_->request_job(j, e); break; }
     case ButtonAction::CHECK_ONLINE: this->parent_->request_check_online(); break;
     case ButtonAction::UPDATE_ALL: this->parent_->request_update_all(); break;
+    case ButtonAction::DEFAULTS_ALL: this->parent_->request_defaults_all(); break;
   }
 }
 #endif

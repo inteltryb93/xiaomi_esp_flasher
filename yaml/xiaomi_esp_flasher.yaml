@@ -100,6 +100,8 @@ xiaomi_esp_flasher:
     name: Update All Thermometers
   check_online_button:
     name: Check Firmware Online
+  defaults_all_button:
+    name: Send Default Config To All Thermometers
   devices:
     - mac_address: ${test_device_mac}
       name: Living Room

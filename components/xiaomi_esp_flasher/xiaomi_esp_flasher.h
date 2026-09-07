@@ -108,7 +108,7 @@ class XiaomiFirmwareUpdate : public update::UpdateEntity, public Component {
 #endif
 
 #ifdef USE_BUTTON
-enum class ButtonAction : uint8_t { SCAN, IDENTIFY, FLASH, SET_TIME, REBOOT, CHECK_ONLINE, UPDATE_ALL };
+enum class ButtonAction : uint8_t { SCAN, IDENTIFY, FLASH, SET_TIME, REBOOT, CHECK_ONLINE, UPDATE_ALL, DEFAULTS_ALL };
 class XiaomiFlasherButton : public button::Button, public Component {
  public:
   void set_parent(XiaomiEspFlasher *p) { this->parent_ = p; }
@@ -202,6 +202,7 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   bool request_flash(uint64_t mac, const std::string &fw_id, bool from_ha);
   void request_scan();
   void request_update_all();
+  void request_defaults_all();  // CMD_ID_CFG_DEF (56) to every reachable pvvx device, one after another
   void request_check_online();
   void forget_device(uint64_t mac);
   void set_alias(uint64_t mac, const std::string &alias);
@@ -383,6 +384,7 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   std::atomic<bool> scan_requested_{false};
   std::atomic<bool> check_online_requested_{false};
   std::atomic<bool> update_all_requested_{false};
+  std::atomic<bool> defaults_all_requested_{false};
   std::atomic<bool> recompute_requested_{false};  // set from the httpd task, handled in loop()
   uint32_t last_scan_epoch_{0};
   uint32_t last_ota_epoch_{0};

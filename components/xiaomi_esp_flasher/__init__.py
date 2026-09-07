@@ -104,6 +104,7 @@ CONF_OTA_ACTIVE = "ota_active"
 CONF_SCAN_BUTTON = "scan_button"
 CONF_UPDATE_ALL_BUTTON = "update_all_button"
 CONF_CHECK_ONLINE_BUTTON = "check_online_button"
+CONF_DEFAULTS_ALL_BUTTON = "defaults_all_button"
 
 DEVICE_ENTITY_DEFAULTS = {
     CONF_TEMPERATURE: "Temperature",
@@ -218,6 +219,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_SCAN_BUTTON): button.button_schema(XiaomiFlasherButton, icon="mdi:bluetooth-audio"),
             cv.Optional(CONF_UPDATE_ALL_BUTTON): button.button_schema(XiaomiFlasherButton, icon="mdi:update"),
             cv.Optional(CONF_CHECK_ONLINE_BUTTON): button.button_schema(XiaomiFlasherButton, icon="mdi:cloud-download"),
+            cv.Optional(CONF_DEFAULTS_ALL_BUTTON): button.button_schema(XiaomiFlasherButton, icon="mdi:restore", entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -344,6 +346,8 @@ async def to_code(config):
         await _new_button(config[CONF_UPDATE_ALL_BUTTON], hub, ButtonAction.UPDATE_ALL)
     if CONF_CHECK_ONLINE_BUTTON in config:
         await _new_button(config[CONF_CHECK_ONLINE_BUTTON], hub, ButtonAction.CHECK_ONLINE)
+    if CONF_DEFAULTS_ALL_BUTTON in config:
+        await _new_button(config[CONF_DEFAULTS_ALL_BUTTON], hub, ButtonAction.DEFAULTS_ALL)
 
     # ---- per-device entities ----
     for dev in config[CONF_DEVICES]:

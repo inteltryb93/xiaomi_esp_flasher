@@ -235,6 +235,7 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
   };
   if (url == "/api/scan") { this->request_scan(); ok("scan requested"); return; }
   if (url == "/api/queue/all") { this->request_update_all(); ok("update all queued"); return; }
+  if (url == "/api/queue/defaults") { this->request_defaults_all(); ok("default config to all queued"); return; }
   if (url == "/api/firmware/check") { this->request_check_online(); ok("online check requested"); return; }
   if (url == "/api/firmware/manifest") {
     // firmware.json fetched by the browser from GitHub and pushed here (no TLS stack on the ESP32)
