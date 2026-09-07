@@ -39,6 +39,38 @@ bool XiaomiEspFlasher::canHandle(AsyncWebServerRequest *request) const {
   return url.rfind("/api/", 0) == 0;
 }
 
+// Chunked JSON responses straight through esp_http_server: no large contiguous buffer is ever needed
+// (the previous "build one 14 KB std::string" approach threw std::bad_alloc on a fragmented heap).
+namespace {
+struct ChunkedJson {
+  httpd_req_t *req;
+  std::string buf;
+  bool ok{true};
+  explicit ChunkedJson(AsyncWebServerRequest *request) : req(*request) {
+    httpd_resp_set_status(req, HTTPD_200);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    buf.reserve(1024);
+  }
+  void add(const char *s, size_t n) {
+    if (!ok) return;
+    buf.append(s, n);
+    if (buf.size() >= 768) flush();
+  }
+  void add(const std::string &s) { add(s.data(), s.size()); }
+  void add(const char *s) { add(s, strlen(s)); }
+  void flush() {
+    if (ok && !buf.empty() && httpd_resp_send_chunk(req, buf.data(), buf.size()) != ESP_OK) ok = false;
+    buf.clear();
+  }
+  void end() {
+    flush();
+    if (ok) httpd_resp_send_chunk(req, nullptr, 0);
+  }
+};
+}  // namespace
+
 void XiaomiEspFlasher::send_json_(AsyncWebServerRequest *req, int code, const std::string &json) {
   AsyncWebServerResponse *r = req->beginResponse(code, "application/json", json);
   r->addHeader("Cache-Control", "no-store");
@@ -51,7 +83,7 @@ void XiaomiEspFlasher::handleBody(AsyncWebServerRequest *request, uint8_t *data,
   std::string url = url_of(request);
   if (url == "/api/firmware/upload") {
     if (index == 0) {
-      this->upload_ = Upload{};
+      this->upload_.reset();
       this->upload_.active = true;
       this->upload_.total = total;
       this->upload_.name = request->hasArg("name") ? request->arg("name") : "upload.bin";
@@ -141,17 +173,19 @@ void XiaomiEspFlasher::handle_get_(AsyncWebServerRequest *req, const std::string
   if (url == "/style.css") { serve(this->css_, this->css_len_, "text/css"); return; }
   if (url == "/pvvx_config.js") { serve(this->pvvx_js_, this->pvvx_js_len_, "application/javascript"); return; }
   if (url == "/api/firmware/manifest") {
-    std::string m = this->runtime_manifest_.empty() ? std::string(this->manifest_json_) : this->runtime_manifest_;
-    this->send_json_(req, 200, m);
+    const char *m = this->runtime_manifest_.empty() ? this->manifest_json_ : this->runtime_manifest_.c_str();
+    ChunkedJson cj(req);
+    cj.add(m);
+    cj.end();
     return;
   }
   if (url == "/api/status") { this->send_json_(req, 200, this->json_status_()); return; }
-  if (url == "/api/devices") { this->send_json_(req, 200, this->json_devices_()); return; }
-  if (url == "/api/firmware") { this->send_json_(req, 200, this->json_firmware_()); return; }
+  if (url == "/api/devices") { this->send_devices_chunked_(req); return; }
+  if (url == "/api/firmware") { this->send_firmware_chunked_(req); return; }
   if (url == "/api/ota/status") { this->send_json_(req, 200, this->json_ota_status_()); return; }
   if (url == "/api/log") {
     uint32_t since = req->hasArg("since") ? strtoul(req->arg("since").c_str(), nullptr, 10) : 0;
-    this->send_json_(req, 200, this->json_log_(since));
+    this->send_log_chunked_(req, since);
     return;
   }
   if (url == "/api/events") { this->handle_sse_(req); return; }
@@ -209,17 +243,16 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
     if (!this->provider_->set_manifest(body, err)) { bad(422, "INVALID_REQUEST", err); return; }
     this->runtime_manifest_ = body;
     this->save_manifest_pref_(body);
-    for (auto &d : this->devices_) this->recompute_eligibility_(*d);
-    this->needs_global_publish_ = true;
+    this->recompute_requested_ = true;
+    this->enable_loop_soon_any_context();
     this->logf("Firmware manifest updated from the browser: version %s", version_from_bcd(this->provider_->manifest_version()).c_str());
     this->send_json_(req, 200, "{\"ok\":true,\"version\":\"" + version_from_bcd(this->provider_->manifest_version()) + "\"}");
     return;
   }
   if (url == "/api/firmware/upload") {
-    Upload u = this->upload_;
-    this->upload_ = Upload{};
+    Upload &u = this->upload_;
     if (!u.active) { bad(400, "INVALID_REQUEST", "no upload data"); return; }
-    if (u.failed) { bad(422, u.err.rfind("NOT_ENOUGH", 0) == 0 ? "NOT_ENOUGH_STORAGE" : "INVALID_IMAGE", u.err); return; }
+    if (u.failed) { std::string e = u.err; u.active = false; bad(422, e.rfind("NOT_ENOUGH", 0) == 0 ? "NOT_ENOUGH_STORAGE" : "INVALID_IMAGE", e); return; }
     // hardware ids the user declares the image for (query ?hw=0,3,4 ; default: all LYWSD03MMC ids)
     std::vector<int> ids = {0, 3, 4, 5, 10, 14};
     if (req->hasArg("hw")) {
@@ -243,15 +276,21 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
       else if (k == "signed") kind = ImageKind::SIGNED;
     }
     std::string err;
-    std::string src = req->hasArg("source") ? req->arg("source") : "upload";
-    if (!this->store_.finish_write(u.name, version, kind, hw_ids_mask(ids), src, err)) { bad(422, "INVALID_IMAGE", err); return; }
-    this->logf("Uploaded firmware %s (%u bytes) stored", u.name.c_str(), (unsigned) u.total);
-    StoredImage img;
-    FirmwareInfo fi;
-    if (this->store_.find(u.name, img)) this->store_.get_info(img, fi);
-    for (auto &d : this->devices_) this->recompute_eligibility_(*d);
-    this->needs_global_publish_ = true;
-    this->send_json_(req, 200, "{\"ok\":true,\"id\":\"" + fi.id + "\",\"size\":" + std::to_string(fi.size) + ",\"crc32\":\"" + format_hex(fi.crc32) + "\"}");
+    u.version = version;
+    u.kind = kind;
+    u.hw_ids = hw_ids_mask(ids);
+    u.source = req->hasArg("source") ? req->arg("source") : "upload";
+    // validation + header write + rescan run on the main loop (the httpd task has a 4 KB stack); wait here
+    u.done = false;
+    u.finish_requested = true;
+    this->enable_loop_soon_any_context();
+    uint32_t until = millis() + 20000;
+    while (!u.done && (int32_t) (millis() - until) < 0)
+      vTaskDelay(pdMS_TO_TICKS(25));
+    u.active = false;
+    if (!u.done) { bad(500, "INTERNAL_ERROR", "finish timeout"); return; }
+    if (!u.ok) { bad(422, u.err.rfind("NOT_ENOUGH", 0) == 0 ? "NOT_ENOUGH_STORAGE" : "INVALID_IMAGE", u.err); return; }
+    this->send_json_(req, 200, "{\"ok\":true,\"id\":\"" + u.result_id + "\",\"size\":" + std::to_string(u.result_size) + ",\"crc32\":\"" + format_hex(u.result_crc) + "\"}");
     return;
   }
   if (url.rfind("/api/device/", 0) == 0) {
@@ -574,9 +613,9 @@ std::string XiaomiEspFlasher::json_device_(const XiaomiDevice &d, bool full) {
   return out;
 }
 
-std::string XiaomiEspFlasher::json_devices_() {
-  // one small JsonDocument per device instead of one big one: keeps the peak heap low on the ESP32-C3
-  std::string out = "[";
+void XiaomiEspFlasher::send_devices_chunked_(AsyncWebServerRequest *req) {
+  ChunkedJson cj(req);
+  cj.add("[");
   {
     LockGuard g(this->mutex_);
     bool first = true;
@@ -584,16 +623,15 @@ std::string XiaomiEspFlasher::json_devices_() {
       JsonDocument doc;
       JsonObject o = doc.to<JsonObject>();
       this->device_to_json_(o, *d, false);
-      if (!first)
-        out += ",";
-      first = false;
       std::string one;
-      serializeJson(doc, one);  // serializeJson(doc, std::string&) replaces the target, so append via a temp
-      out += one;
+      serializeJson(doc, one);
+      if (!first) cj.add(",");
+      first = false;
+      cj.add(one);
     }
   }
-  out += "]";
-  return out;
+  cj.add("]");
+  cj.end();
 }
 
 std::string XiaomiEspFlasher::json_status_() {
@@ -640,7 +678,7 @@ std::string XiaomiEspFlasher::json_status_() {
   o["remote_manifest"] = this->remote_url_;
   o["assets_url"] = this->assets_url_;
   o["manifest_source"] = this->runtime_manifest_.empty() ? "built-in" : "browser (stored)";
-  o["hold_device"] = (this->session_active() && this->job_.type == JobType::CONNECT && this->dev_) ? this->dev_->mac : "";
+  o["hold_device"] = (this->state_ == SessionState::READY && this->job_.type == JobType::CONNECT && this->dev_) ? this->dev_->mac : "";
   o["test_device"] = this->test_mac_ ? format_hex(this->test_mac_) : "";
   o["log_seq"] = this->log_seq_;
   std::string out;
@@ -648,8 +686,9 @@ std::string XiaomiEspFlasher::json_status_() {
   return out;
 }
 
-std::string XiaomiEspFlasher::json_firmware_() {
-  std::string out = "[";
+void XiaomiEspFlasher::send_firmware_chunked_(AsyncWebServerRequest *req) {
+  ChunkedJson cj(req);
+  cj.add("[");
   if (this->provider_) {
     bool first = true;
     for (auto &fi : this->provider_->get_available_firmwares()) {
@@ -667,34 +706,33 @@ std::string XiaomiEspFlasher::json_firmware_() {
       for (int i : fi.hw_ids) ids.add(i);
       JsonArray names = o["hw_names"].to<JsonArray>();
       for (int i : fi.hw_ids) names.add(hw_id_name(i));
-      if (!first)
-        out += ",";
-      first = false;
       std::string one;
-      serializeJson(doc, one);  // serializeJson(doc, std::string&) replaces the target, so append via a temp
-      out += one;
+      serializeJson(doc, one);
+      if (!first) cj.add(",");
+      first = false;
+      cj.add(one);
     }
   }
-  out += "]";
-  return out;
+  cj.add("]");
+  cj.end();
 }
 
-std::string XiaomiEspFlasher::json_log_(uint32_t since) {
-  JsonDocument doc;
-  JsonObject root = doc.to<JsonObject>();
-  JsonArray arr = root["lines"].to<JsonArray>();
+void XiaomiEspFlasher::send_log_chunked_(AsyncWebServerRequest *req, uint32_t since) {
+  ChunkedJson cj(req);
   {
     LockGuard g(this->mutex_);
-    root["seq"] = this->log_seq_;
+    cj.add("{\"seq\":" + std::to_string(this->log_seq_) + ",\"lines\":[");
+    bool first = true;
     for (auto &l : this->log_) {
       if (l.seq <= since) continue;
-      JsonObject o = arr.add<JsonObject>();
-      o["seq"] = l.seq; o["t"] = l.epoch; o["ms"] = l.ms; o["msg"] = l.text;
+      if (!first) cj.add(",");
+      first = false;
+      cj.add("{\"seq\":" + std::to_string(l.seq) + ",\"t\":" + std::to_string(l.epoch) + ",\"ms\":" + std::to_string(l.ms) +
+             ",\"msg\":\"" + json_escape(l.text) + "\"}");
     }
   }
-  std::string out;
-  serializeJson(doc, out);
-  return out;
+  cj.add("]}");
+  cj.end();
 }
 
 std::string XiaomiEspFlasher::json_ota_status_() {

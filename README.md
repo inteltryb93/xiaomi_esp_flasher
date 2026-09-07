@@ -22,10 +22,13 @@ configuration → Telink OTA 4.7 → 5.9 → verify → Home Assistant update en
 * Xiaomi "Do Activation" / login (ECDH P‑256, HKDF, AES‑CCM, HMAC) for devices still on the original firmware
 * Configuration model of the pvvx firmware: offsets, comfort, smiley/clock/battery display, advertising type &
   interval, TX power, latency, LCD refresh, averaging, sensor calibration, trigger/reed switch, name, PIN, time
-* Firmware sources: bundled manifest + image (offline), user upload (validated, stored in a flash partition),
-  optional online `firmware.json` + download from GitHub
-* Web GUI (responsive, light/dark, no internet needed): device table, device page (overview / firmware / configure
-  tabs / diagnostics), OTA progress bar, OTA log, firmware repository, diagnostics page, confirmation dialogs
+* Firmware sources: the **browser** fetches `firmware.json` and the images from GitHub and stores them in the
+  ESP32 `fwstore` partition (no TLS stack on the ESP32); user upload of any `.bin` (validated); optional
+  `bundle_firmware`/`remote_manifest` for offline / ESP32-side download builds
+* Web GUI (responsive, light/dark): device table, device page (overview / firmware / **Configure = the pvvx
+  TelinkMiFlasher configuration section, same HTML/JS/CSS**, diagnostics), OTA progress bar, OTA log, firmware
+  repository, diagnostics page, confirmation dialogs. GUI files are served from GitHub via jsDelivr by default
+  (`web_assets: remote`) or compiled into flash (`web_assets: embedded`, offline)
 * JSON API + Server-Sent Events
 * Home Assistant: per-thermometer sensors, diagnostics, `update` entity (Install = OTA from HA), buttons,
   "Update all" queue (sequential, verified one by one)
@@ -69,7 +72,9 @@ xiaomi_esp_flasher:
   auto_identify: true                     # identify unknown / stale devices automatically (one at a time)
   identify_interval: 6h                   # re-identify to keep versions fresh
   remote_manifest: https://raw.githubusercontent.com/pvvx/ATC_MiThermometer/master/firmware.json  # optional
-  fwstore_size: 0x40000                   # flash partition for uploaded/downloaded images
+  fwstore_size: 0x40000                   # flash partition for images (128 KiB slots)
+  web_assets: remote                      # GUI from https://cdn.jsdelivr.net/gh/inteltryb93/xiaomi_esp_flasher@main/web/
+  bundle_firmware: false                  # true: compile firmware/*.bin into the image (offline OTA source)
   devices:                                # thermometers that get Home Assistant entities
     - mac_address: "A4:C1:38:4A:E8:8C"
       name: Living Room                   # alias; entities become "Living Room Temperature" etc.
@@ -91,6 +96,7 @@ ESP32-C3 4 MB: ~1.67 MB per app slot. Measured flash budget (2026-09-07):
 | full, HTTPS with CA bundle (original) | 1 690 954 B (99.2 %) |
 | full, HTTPS **without certificate verification** (current default) | 1 671 082 B (98.1 %) |
 | without `remote_manifest` (no TLS stack / HTTP client at all) | 1 577 466 B (92.6 %) |
+| **current default**: no TLS, no bundled image, GUI from CDN | **1 485 842 B (87.2 %)** |
 
 The GUI (index.html + app.js + style.css, gzip) is only 15.6 KB (~1 %) and must work offline, so it stays in
 flash; the bundled `ATC_v59.bin` is 86 KB; the TLS stack + HTTP client needed for GitHub (which refuses plain
@@ -133,12 +139,14 @@ a code (below); nothing is retried automatically after a failed OTA – identify
 Firmware page: bundled/stored/remote images, "Check online (GitHub)", upload of a custom `.bin`
 (validated: Telink header, size pointer, CRC32; you must declare the hardware ids).
 
-## 8. Configuration
+## 8. Configuration (pvvx TelinkMiFlasher section)
 
-Device page → Configure: tabs General / Display / Advertising / Comfort / Time / Security / Advanced.
-`Read Config` (re-identifies), `Set Defaults` (form only), `Send Config` (writes, reads back, compares).
-`Set time` sends the ESP32 clock (SNTP, local time as pvvx does). Name / PIN / reboot / factory defaults have
-their own buttons with confirmations.
+Device page → Configure → **Connect**: the ESP32 opens and holds the BLE link (idle timeout 5 min) and the tab
+shows exactly the pvvx TelinkMiFlasher custom-firmware section (`web/pvvx_config.js` is a verbatim port of the
+original JavaScript; `CustomBlkParse()` parses the notifications, `Get Config` → `55`, `Send Config`,
+`Set default`, comfort, trigger/reed switch, sensor calibration, delta time, TrSc, PIN, name, MAC, keys, ext
+display, memo …). Every button sends the same bytes as the original; the transport is
+`POST /api/device/<mac>/cmd` and the 0x1F1F notifications arrive over SSE. **Disconnect** releases the link.
 
 ## 9. Home Assistant
 
@@ -171,7 +179,11 @@ Thermometers, Thermometers Needing Update, OTA Progress, OTA Active, BLE Scan, U
 | GET | `/api/status` | gateway diagnostics |
 | GET | `/api/devices` | device table |
 | GET | `/api/device/<mac>` | full device record (cfg, comfort, sensor, trigger, DIS, services …) |
-| POST | `/api/device/<mac>/identify` | connect + identify (= Read Config) |
+| POST | `/api/device/<mac>/identify` | connect + identify |
+| POST | `/api/device/<mac>/connect` `/disconnect` | hold / release a BLE link for the Configure tab (job `connect`, state READY) |
+| POST | `/api/device/<mac>/cmd` | `{"hex":"55","wait":2000}` raw pvvx command on 0x1F1F while connected; returns notifications received within `wait` ms |
+| GET | `/api/device/<mac>/notify?since=N` | notification ring (also streamed as SSE `notify` events) |
+| GET/POST | `/api/firmware/manifest` | current `firmware.json` / push a fresh one from the browser (stored in NVS) |
 | POST | `/api/device/<mac>/config` | `{"cfg":{…},"comfort":{…},"sensor":{…},"trigger":{…}}` write + verify |
 | POST | `/api/device/<mac>/defaults` | device factory defaults (`56`) |
 | POST | `/api/device/<mac>/settime` `/name` `/pin` `/reboot` | as named (`{"name":"…"}`, `{"pin":123456}`) |
@@ -179,7 +191,7 @@ Thermometers, Thermometers Needing Update, OTA Progress, OTA Active, BLE Scan, U
 | POST | `/api/device/<mac>/flash` | `{"firmware":"<id>","confirm":true}` – 409 unless compatible |
 | POST | `/api/device/<mac>/add` `/forget` `/alias` | registry management |
 | GET | `/api/firmware` | available images (bundled / store / remote) |
-| POST | `/api/firmware/upload?name=&version=&hw=0,3` | raw `.bin` body (octet-stream) |
+| POST | `/api/firmware/upload?name=&version=&hw=0,3&kind=custom&source=` | raw `.bin` body (octet-stream) into a fwstore slot |
 | POST | `/api/firmware/check` | fetch online manifest (if configured) |
 | POST | `/api/scan`, `/api/queue/all` | scan / update all |
 | GET | `/api/log?since=N`, `/api/ota/status`, `/api/events` (SSE) | log ring, OTA progress, live events |

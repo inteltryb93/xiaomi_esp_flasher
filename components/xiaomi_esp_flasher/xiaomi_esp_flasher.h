@@ -273,10 +273,10 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   void handle_post_(AsyncWebServerRequest *req, const std::string &url, const std::string &body);
   void send_json_(AsyncWebServerRequest *req, int code, const std::string &json);
   std::string json_status_();
-  std::string json_devices_();
+  void send_devices_chunked_(AsyncWebServerRequest *req);
+  void send_firmware_chunked_(AsyncWebServerRequest *req);
+  void send_log_chunked_(AsyncWebServerRequest *req, uint32_t since);
   std::string json_device_(const XiaomiDevice &d, bool full);
-  std::string json_firmware_();
-  std::string json_log_(uint32_t since);
   std::string json_ota_status_();
   std::string json_notify_(uint64_t mac, uint32_t since);
   void load_manifest_pref_();
@@ -293,8 +293,24 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
     bool failed{false};
     std::string err;
     std::string name;
+    std::string version;
+    std::string source;
+    ImageKind kind{ImageKind::USER_UPLOAD};
+    uint64_t hw_ids{0};
     size_t total{0};
     size_t received{0};
+    // finish (validation + header write + rescan) runs on the main loop; the httpd task waits for `done`
+    std::atomic<bool> finish_requested{false};
+    std::atomic<bool> done{false};
+    bool ok{false};
+    std::string result_id;
+    size_t result_size{0};
+    uint32_t result_crc{0};
+    void reset() {
+      active = failed = ok = false; err.clear(); name.clear(); version.clear(); source.clear(); result_id.clear();
+      kind = ImageKind::USER_UPLOAD; hw_ids = 0; total = received = result_size = 0; result_crc = 0;
+      finish_requested = false; done = false;
+    }
   } upload_;
   std::string body_;
 
@@ -366,6 +382,7 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   std::atomic<bool> scan_requested_{false};
   std::atomic<bool> check_online_requested_{false};
   std::atomic<bool> update_all_requested_{false};
+  std::atomic<bool> recompute_requested_{false};  // set from the httpd task, handled in loop()
   uint32_t last_scan_epoch_{0};
   uint32_t last_ota_epoch_{0};
   std::string last_ota_result_;

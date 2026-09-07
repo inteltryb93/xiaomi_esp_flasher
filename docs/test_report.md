@@ -178,3 +178,31 @@ offline keep `bundled:` ids; remote-only images would appear as `remote:`). A fi
 lists panicked the ESP32 (reset reason 4) while building a ~25 KB JSON document with only 25 KB free heap – fixed
 by merging the lists and serialising both `/api/firmware` and `/api/devices` entry by entry. Min free heap during
 the TLS handshake: 19.8 KB. Flash: 1 671 082 B (98.1 %) with TLS, 1 577 466 B (92.6 %) without `remote_manifest`.
+
+## Round 3 (user requests): pvvx-identical Configure tab, GUI from CDN, no TLS, images via browser
+
+* Flash: 1 690 954 B (99.2 %) → **1 486 398 B (87.2 %)**: no TLS stack (`remote_manifest` off), no bundled image
+  (browser downloads from GitHub into the 2-slot `fwstore` partition), GUI files from jsDelivr
+  (`web_assets: remote`; ESP32 serves an 880-byte bootstrap page + 302 redirects for `/app.js`, `/style.css`,
+  `/pvvx_config.js`).
+* Configure tab = verbatim port of the pvvx TelinkMiFlasher custom-firmware section (`web/pvvx_config.js`,
+  1724 lines extracted from TelinkMiFlasher.html v14.1). BLE transport: held link on the ESP32
+  (`POST /connect`, job `connect`, state READY, idle timeout 5 min), raw commands `POST /cmd {"hex":..}`,
+  0x1F1F notifications as SSE `notify` events / `GET /notify?since=`.
+* Bridge test with curl on A4:C1:38:4A:E8:8C: `55` → `555987100a062804a9313104b400`, `20` → comfort, `44` →
+  trigger, `01` → `ATC_4AE88C`, `23` → time, `03` → `037888` (LCD 0x3C, sensor 0x44), plus the periodic `33`
+  measurement notification; disconnect → `Done: disconnected`.
+* Headless-Chromium test (`scripts/gui_test.py`, DevTools protocol): bootstrap page → CDN assets → device page →
+  Configure → Connect → `Get Config` → `CustomConfig()` rendered (version 5.9, adv interval 2500.0, comfort
+  26.00, name ATC_4AE88C after `20`/`44`/`01`), log lines identical to pvvx ("Threshold Temp/Humi: …",
+  "Comfort Temp: …", "DevName: […]"), Disconnect → "Status: Disconnected". Screenshots: `logs/gui_*.png`.
+* `scripts/gui_download_test.py`: browser fetches `firmware.json` (44 images) → `POST /api/firmware/manifest`
+  (stored in NVS, "manifest_source: browser (stored)") → downloads `ATC_v59.bin` from GitHub → uploads it →
+  `store:ATC_v59.bin` 86 308 B CRC32 0x6F4CA058.
+* Two crashes found and fixed with a serial backtrace (`logs/serial_upload.log`, decoded with addr2line):
+  1. upload finalisation (image validation + slot rescan) ran on the 4 KB esp_http_server task → moved to the
+     main loop (`upload_.finish_requested`, httpd task waits);
+  2. `std::bad_alloc` → `abort()` in `handle_get_()` while building the 13.6 KB `/api/firmware` JSON in one
+     `std::string` (reallocation copies + response copy) on a fragmented heap → all list endpoints
+     (`/api/firmware`, `/api/devices`, `/api/log`, `/api/firmware/manifest`) are now streamed as HTTP chunks
+     entry by entry (`ChunkedJson`, ≤ 1 KB buffer).

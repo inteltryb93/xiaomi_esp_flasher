@@ -343,15 +343,17 @@ void XiaomiEspFlasher::recompute_eligibility_(XiaomiDevice &d) {
   d.latest_version = fw.version;
   d.latest_firmware_id = fw.id;
   d.compat = check_compatibility(d.hw, fw);
+  bool hw_ok = d.compat.ok;  // hardware/firmware match, independent of whether the bytes are on the ESP32 yet
   if (fw.size == 0) {
     d.compat.ok = false;
     d.compat.code = Error::NOT_ENOUGH_STORAGE;
-    d.compat.message = "Firmware " + fw.name + " is known from the manifest but not downloaded.";
+    d.compat.message = "Firmware " + fw.name + " v" + fw.version + " is listed for this hardware but not stored on the ESP32 yet – download it on the Firmware page (browser fetches it from GitHub).";
   }
+  // "update available" reflects versions (what Home Assistant needs to know); flashing is still gated by compat.ok
   if (d.hw.kind == FirmwareKind::CUSTOM_PVVX) {
-    d.update_available = d.compat.ok && compare_versions(d.installed_version(), fw.version) < 0;
+    d.update_available = hw_ok && compare_versions(d.installed_version(), fw.version) < 0;
   } else if (d.hw.kind == FirmwareKind::STOCK_XIAOMI || d.hw.kind == FirmwareKind::ATC1441) {
-    d.update_available = d.compat.ok;  // conversion to custom firmware
+    d.update_available = hw_ok;  // conversion to custom firmware
   }
 }
 
@@ -642,6 +644,29 @@ void XiaomiEspFlasher::loop() {
     this->log("BLE scan started");
     if (this->parent_ != nullptr && !this->parent_->scan_running() && !this->session_active())
       this->parent_->start_scan();
+    this->needs_global_publish_ = true;
+  }
+  if (this->upload_.finish_requested.exchange(false)) {
+    Upload &u = this->upload_;
+    std::string err;
+    u.ok = this->store_.finish_write(u.name, u.version, u.kind, u.hw_ids, u.source, err);
+    u.err = err;
+    if (u.ok) {
+      StoredImage img;
+      FirmwareInfo fi;
+      if (this->store_.find(u.name, img)) this->store_.get_info(img, fi);
+      u.result_id = fi.id;
+      u.result_size = fi.size;
+      u.result_crc = fi.crc32;
+      this->logf("Firmware %s v%s (%u bytes) stored on the ESP32", u.name.c_str(), u.version.c_str(), (unsigned) u.total);
+      this->recompute_requested_ = true;
+    } else {
+      this->logf("Upload of %s rejected: %s", u.name.c_str(), err.c_str());
+    }
+    u.done = true;
+  }
+  if (this->recompute_requested_.exchange(false)) {
+    for (auto &d : this->devices_) { this->recompute_eligibility_(*d); this->publish_device_(*d, false); }
     this->needs_global_publish_ = true;
   }
   if (this->update_all_requested_.exchange(false)) {
