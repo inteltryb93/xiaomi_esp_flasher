@@ -566,6 +566,13 @@ void XiaomiEspFlasher::loop() {
       this->fail_session_(Error::BLE_TIMEOUT, std::string("timeout in state ") + session_state_name(this->state_));
     }
   }
+  // fallback: the device did not drop the link 25 s after the end packet -> disconnect from our side
+  if (this->state_ == SessionState::REBOOTING && this->reconnect_at_ == 0 && this->ota_end_ms_ &&
+      (now - this->ota_end_ms_) > 25000 && this->client_ && !this->client_->is_idle()) {
+    this->log("Device kept the link 25 s after OTA end, disconnecting to verify");
+    this->ota_end_ms_ = 0;
+    this->client_->end_connection();
+  }
   // delayed reconnect for verification
   if (this->state_ == SessionState::REBOOTING && this->reconnect_at_ && (int32_t) (now - this->reconnect_at_) >= 0) {
     this->reconnect_at_ = 0;
@@ -655,7 +662,7 @@ void XiaomiEspFlasher::loop() {
     if (!have && this->auto_identify_ && (now - this->last_auto_identify_ms_) > 20000 && now > 30000) {
       // identify one not-yet-identified (or stale) device that is currently in range
       for (auto &d : this->devices_) {
-        bool in_range = d->last_seen_ms && (now - d->last_seen_ms) < 60000;
+        bool in_range = d->last_seen_ms && (now - d->last_seen_ms) < 60000 && d->rssi > -95;  // weak links: 3x20 s timeouts
         bool stale = d->identified && this->identify_interval_s_ && d->identified_epoch &&
                      this->epoch_now_() > d->identified_epoch + this->identify_interval_s_;
         if (in_range && (!d->identified || stale) && d->status != DeviceStatus::FAILED) {
@@ -805,7 +812,9 @@ void XiaomiEspFlasher::on_connected_(bool established, int reason) {
     return;
   }
   if (this->state_ == SessionState::REBOOTING) {
-    // expected: device reboots after OTA end
+    // expected: device reboots after OTA end – reconnect a few seconds later
+    this->log("Device dropped the link (rebooting into the new firmware)");
+    this->reconnect_at_ = millis() + 4000;
     return;
   }
   if (this->state_ == SessionState::RECONNECTING) {
@@ -1584,15 +1593,20 @@ void XiaomiEspFlasher::on_ota_done_(bool ok, Error err, const std::string &msg) 
     this->fail_session_(err, msg);
     return;
   }
-  this->log("Verifying... (device checks the image CRC and reboots)");
+  this->log("Verifying... (device checks the image CRC and reboots): " + msg);
   this->set_state_(SessionState::REBOOTING);
   this->dev_->status = DeviceStatus::UPDATING;
-  // the device drops the link by itself; make sure we are idle before reconnecting
   this->verify_attempts_ = 0;
-  this->reconnect_at_ = millis() + 8000;
-  this->arm_step_timeout_(30000);
-  if (this->client_ && !this->client_->is_idle())
-    this->client_->end_connection();
+  this->ota_end_ms_ = millis();
+  // Do NOT disconnect here: the last write-without-response packets may still sit in the controller queue and
+  // would be discarded (observed: image rejected, device stayed on the old firmware). The peripheral drops the
+  // link itself when it reboots; on_connected_(false) schedules the reconnect. Fallback after 25 s below.
+  if (this->client_->is_idle()) {
+    this->reconnect_at_ = millis() + 4000;
+  } else {
+    this->reconnect_at_ = 0;
+  }
+  this->arm_step_timeout_(60000);
 }
 
 void XiaomiEspFlasher::step_verify_reconnect_() {

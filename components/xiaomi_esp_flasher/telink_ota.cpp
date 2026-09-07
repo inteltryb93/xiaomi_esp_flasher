@@ -210,15 +210,35 @@ void TelinkOtaProtocol::send_end_() {
       this->fail_(Error::OTA_WRITE_FAILED, "write CMD_OTA_END failed (" + std::to_string(st) + ")");
       return;
     }
-    this->progress_.state = OtaState::DONE;
-    this->progress_.message = "OTA end sent, device verifies image and reboots";
-    ESP_LOGI(TAG, "OTA send %u blocks - ok (%.1f s)", (unsigned) this->progress_.blocks_total,
+    ESP_LOGI(TAG, "OTA send %u blocks - ok (%.1f s), reading final status", (unsigned) this->progress_.blocks_total,
              (millis() - this->progress_.started_ms) / 1000.0f);
-    this->report_();
-    auto cb = std::move(this->done_cb_);
-    this->done_cb_ = nullptr;
-    if (cb)
-      cb(true, Error::NONE, this->progress_.message);
+    // The WRITE_CHAR_EVT of a write-without-response only means "queued in the local stack". A read request is
+    // ordered behind the queued writes (ATT is sequential), so its response proves the peripheral consumed the last
+    // data blocks and the end packet, and returns the SDK result (OTA_SUCCESS / DATA_UNCOMPLETE / FW_CHECK_ERR ...).
+    // The device drops the link by itself when it reboots into the new image – never disconnect from our side.
+    this->client_->read(this->handle_, [this](int rst, const uint8_t *data, size_t len) {
+      if (this->progress_.state != OtaState::FINISHING)
+        return;
+      if (rst == ESP_GATT_OK && len > 0) {
+        this->progress_.device_status = data[0];
+        if (data[0] != 0) {
+          this->fail_(Error::OTA_DEVICE_ERROR, std::string("device rejected the image at the end: ") + device_status_name(data[0]));
+          return;
+        }
+        this->progress_.message = "device confirmed the image (status 0), rebooting";
+      } else if (rst == GATT_ERR_DISCONNECTED) {
+        this->progress_.message = "device dropped the link after the end packet (rebooting)";
+      } else {
+        this->progress_.message = "final status read failed (" + std::to_string(rst) + "), verifying by reconnect";
+      }
+      this->progress_.state = OtaState::DONE;
+      ESP_LOGI(TAG, "%s", this->progress_.message.c_str());
+      this->report_();
+      auto cb = std::move(this->done_cb_);
+      this->done_cb_ = nullptr;
+      if (cb)
+        cb(true, Error::NONE, this->progress_.message);
+    }, 8000);
   });
 }
 

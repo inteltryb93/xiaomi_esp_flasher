@@ -155,7 +155,16 @@ TelinkOTA.html; `SDK/components/stack/ble/service/ble_ll_ota.h`; `ble.c app_ente
    overflow the link).
 7. end: `02 ff` + `(n-1) LE16` + `(~(n-1)) & 0xFFFF LE16` (`sendLastOTA`). The device verifies the image CRC,
    reboots into the new firmware and drops the link. Success is reported as "Update done".
-8. Verification after reboot is done by reconnecting and re-reading the DIS/`55` config (new `ver`).
+8. **Never disconnect from the central side after `02 ff`.** In Bluedroid a write-without-response is reported
+   complete (`ESP_GATTC_WRITE_CHAR_EVT`) when it is *queued*, not when the peripheral has received it; closing the
+   link right after the end packet discards the queued tail (observed 2026-09-07 on a weak link, RSSI −89:
+   all 5395 blocks "sent", device kept firmware 4.7 = the SDK rejected the image as incomplete). The pvvx browser
+   flasher never disconnects – the thermometer drops the link itself when it reboots. The ESP32 port therefore
+   issues one **read** of the OTA characteristic after `02 ff`: ATT requests are ordered behind the queued
+   commands, so the response proves the peripheral consumed everything and carries the final SDK result
+   (`0` success → reboot follows; `4` "Lost last one or more packets", `6` "Firmware CRC check" → abort). Only if
+   the device still holds the link 25 s later does the ESP32 disconnect.
+9. Verification after reboot is done by reconnecting and re-reading the DIS/`55` config (new `ver`).
 
 Timeouts: the firmware aborts OTA if no packet arrives for 16 s; the browser sends as fast as the link allows.
 Retry semantics: a data block can be re-sent only if the previous write failed at the transport layer *before*

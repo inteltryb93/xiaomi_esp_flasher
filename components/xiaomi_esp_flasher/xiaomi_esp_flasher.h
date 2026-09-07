@@ -311,6 +311,7 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   uint8_t connect_attempts_{0};
   uint8_t verify_attempts_{0};
   uint32_t reconnect_at_{0};
+  uint32_t ota_end_ms_{0};
   bool disconnect_requested_{false};
   bool verify_pending_{false};
   std::string finish_msg_;

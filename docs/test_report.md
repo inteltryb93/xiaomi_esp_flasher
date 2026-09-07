@@ -143,3 +143,29 @@ They were only identified (read-only); no OTA was performed on them.
   0,3,4,5,10 (B1.4..B2.0) in the manifest and would be accepted by the compatibility module as an explicit
   "original" conversion with a warning; it was **not** flashed on the test device because coming back requires
   the Mi activation path that could not be validated on hardware in this session.
+
+## Incident: OTA_VERIFY_FAILED on A4:C1:38:93:72:DB (P3Korytarz, B1.4, pvvx 4.7) – root cause and fix
+
+Symptom (user run, 19:00–19:03): all 5395 blocks sent (every 8-block status read returned 0), `02ff` sent,
+device disconnected, after reconnect it still reported **V4.7** → `OTA_VERIFY_FAILED`. Link quality was poor
+(RSSI −89…−96, 3 connect attempts, 653 B/s instead of ~990 B/s).
+
+Root cause – a defect in the ESP32 port, not in the thermometer: `on_ota_done_()` called `end_connection()`
+immediately after the local completion event of the `02ff` write. In Bluedroid a write-without-response is
+"complete" when it is *queued*, so on a slow link the tail of the transfer (last data blocks + end packet) was still
+in the controller queue and was discarded by our disconnect. The Telink SDK then saw an incomplete image
+(`OTA_DATA_UNCOMPLETE` / missing end command → timeout) and – by design – kept the old firmware and rebooted.
+pvvx's browser flasher never disconnects; the device drops the link itself after checking the image.
+On the good link of the first tests the queue happened to be empty, which is why 4.7→5.9, 5.9→5.8 and 5.8→5.9
+succeeded before.
+
+Fix (`telink_ota.cpp` `send_end_()`, `xiaomi_esp_flasher.cpp` `on_ota_done_()`): after `02ff` the ESP32 issues a
+**read** of the OTA characteristic (ATT requests are ordered behind queued commands, so the response proves the
+peripheral consumed everything and returns the SDK result byte), never disconnects itself (fallback after 25 s),
+and reconnects 4 s after the device drops the link. Auto-identify additionally skips devices weaker than −95 dBm.
+
+Retry with the fix (19:09–19:12, log `logs/run_vv_p3korytarz.log`): 5395 blocks, 128.9 s, 670 B/s, 0 retries;
+the device rebooted before answering the final read (`final status read failed (133)`, i.e. link dropped by the
+peer – expected on success), reconnect on the 3rd attempt (weak link), `Software Revision String: V5.9`,
+`Done: OTA verified: firmware 4.7 -> 5.9`. Home Assistant/GUI: `firmware 5.9`, `ota_result success 4.7 -> 5.9`.
+The thermometer is not defective; it behaved exactly as the Telink bootloader should on an incomplete image.
