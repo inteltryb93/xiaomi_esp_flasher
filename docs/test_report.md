@@ -206,3 +206,29 @@ the TLS handshake: 19.8 KB. Flash: 1 671 082 B (98.1 %) with TLS, 1 577 466 B (9
      `std::string` (reallocation copies + response copy) on a fragmented heap → all list endpoints
      (`/api/firmware`, `/api/devices`, `/api/log`, `/api/firmware/manifest`) are now streamed as HTTP chunks
      entry by entry (`ChunkedJson`, ≤ 1 KB buffer).
+
+## "Update all" pressed in the GUI (headless Chromium, `scripts/gui_update_all.py`, log `logs/update_all_run.log`)
+
+First attempt exposed a bug: the ESP32 reset with reason 6 (task watchdog) right after "Update queue started" –
+the queue builder logged while holding `mutex_`, and `log()` takes the same non-recursive mutex (self-deadlock
+of the main loop). Fixed (messages collected, logged after the lock); "Update all" also skips devices not seen in
+the last 10 min and continues with the next device after a failure.
+
+Second attempt (21:25–21:32): dialog listed 3 devices, `P3Kanciapa` skipped as not seen recently, queue = 2:
+
+| Device | HW | Before | After | Transfer | Verify |
+|---|---|---|---|---|---|
+| A4:C1:38:B0:E4:4A `ATC_B0E44A` | B1.5 (id 10) | 4.7 | **5.9** | 5395 blocks, ~625 B/s (RSSI −88) | reconnect on 3rd attempt, `Done: OTA verified: firmware 4.7 -> 5.9` |
+| A4:C1:38:B8:31:E8 `P3Sypialni` | B1.9 (id 3) | 5.3 | **5.9** | 5395 blocks, ~820 B/s | reconnect on 2nd attempt, `Done: OTA verified: firmware 5.3 -> 5.9` |
+
+GUI observations sampled every 3 s from the page itself: status badge `IDENTIFYING → WRITING → REBOOTING →
+RECONNECTING → SUCCESS · flash <mac>`, the OTA Log panel received every log line over SSE (`OTA started`,
+`Writing 10% … 90%`, `Device dropped the link`, `Done …`), the device-page progress bar advanced with the real
+byte count (`Writing 2% | 2192 / 86308 bytes · 722 B/s` … `90%`). `NaDworze` (HW_UNKNOWN) was never queued.
+
+Device names were reset by the 5.9 firmware again (`P3Sypialni` → `ATC_B831E8`; earlier `P2Kuchnia` →
+`ATC_0B5F4E`) and restored through the API; the flasher now remembers the custom name read before the OTA and
+queues a `set_name` job right after a verified update when the firmware dropped it.
+
+Heap note: `min_free_heap` reached 6 132 B during the run (VERY_VERBOSE logging + SSE + browser polling +
+two OTAs). Lower the logger level to DEBUG for production use.

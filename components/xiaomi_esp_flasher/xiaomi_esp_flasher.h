@@ -362,6 +362,7 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   bool stock_temp_seen_{false};
   std::string target_version_;
   std::string installed_before_;
+  std::string name_before_;
   ImageReader ota_reader_;
   size_t ota_size_{0};
   FirmwareInfo ota_fw_;

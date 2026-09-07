@@ -670,15 +670,22 @@ void XiaomiEspFlasher::loop() {
     this->needs_global_publish_ = true;
   }
   if (this->update_all_requested_.exchange(false)) {
-    LockGuard g(this->mutex_);
-    for (auto &d : this->devices_) {
-      bool in_range = d->last_seen_ms && (millis() - d->last_seen_ms) < 600000 && d->status != DeviceStatus::OFFLINE;
-      if (d->update_available && d->compat.ok && in_range)
-        this->update_queue_.push_back(d->address);
-      else if (d->update_available && d->compat.ok)
-        this->logf("Update all: skipping %s (not seen recently)", d->mac);
+    // never log while holding mutex_ (log() takes it too – the Mutex is not recursive)
+    std::vector<std::string> skipped;
+    size_t queued = 0;
+    {
+      LockGuard g(this->mutex_);
+      for (auto &d : this->devices_) {
+        bool in_range = d->last_seen_ms && (millis() - d->last_seen_ms) < 600000 && d->status != DeviceStatus::OFFLINE;
+        if (d->update_available && d->compat.ok && in_range)
+          this->update_queue_.push_back(d->address);
+        else if (d->update_available && d->compat.ok)
+          skipped.push_back(d->mac);
+      }
+      queued = this->update_queue_.size();
     }
-    this->logf("Update queue: %u device(s)", (unsigned) this->update_queue_.size());
+    for (auto &m : skipped) this->logf("Update all: skipping %s (not seen recently)", m.c_str());
+    this->logf("Update queue: %u device(s)", (unsigned) queued);
   }
 #ifdef USE_XIAOMI_FLASHER_REMOTE
   if (this->check_online_requested_.exchange(false) && !this->session_active()) {
@@ -1641,6 +1648,7 @@ void XiaomiEspFlasher::step_prepare_ota_() {
       return;
     }
     this->installed_before_ = d.installed_version();
+    this->name_before_ = d.device_name;  // pvvx firmware may drop the stored name across EEP layout changes
     this->logf("Compatibility check: PASSED (hw %s id %d, %s -> %s)", d.hw.hw_string.c_str(), d.hw.hw_id,
                this->installed_before_.c_str(), this->target_version_.c_str());
     if (d.hw.kind == FirmwareKind::STOCK_XIAOMI || (d.hw.kind == FirmwareKind::OTHER_TELINK && this->ch_mi10_.handle)) {
@@ -1808,6 +1816,17 @@ void XiaomiEspFlasher::evaluate_verify_() {
     d.ota_result = "success " + this->installed_before_ + " -> " + now;
     this->last_ota_result_ = d.ota_result + " (" + d.mac + ")";
     this->log("Read new firmware version: " + now);
+    bool custom_name = !this->name_before_.empty() && this->name_before_.rfind("ATC_", 0) != 0 &&
+                       this->name_before_.rfind("DEV_", 0) != 0;
+    if (custom_name && d.device_name != this->name_before_) {
+      this->logf("Device name '%s' was reset to '%s' by the new firmware – restoring it", this->name_before_.c_str(), d.device_name.c_str());
+      Job j;
+      j.type = JobType::SET_NAME;
+      j.mac = d.address;
+      j.name = this->name_before_;
+      LockGuard g(this->mutex_);
+      this->job_queue_.push_front(j);  // runs right after this session finishes, before the next queued OTA
+    }
     this->disconnect_and_finish_(true, "OTA verified: firmware " + this->installed_before_ + " -> " + now);
   } else {
     d.ota_result = "verify failed: " + now;
