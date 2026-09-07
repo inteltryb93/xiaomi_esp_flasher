@@ -5,6 +5,7 @@ ATC_MiThermometer firmware (or the original Xiaomi firmware).
 """
 import gzip
 import json
+import logging
 from pathlib import Path
 
 import esphome.codegen as cg
@@ -47,6 +48,8 @@ from esphome.const import (
     UNIT_VOLT,
 )
 from esphome.core import CORE, ID, HexInt
+
+_LOGGER = logging.getLogger(__name__)
 
 AUTO_LOAD = [
     "esp32_ble_client",
@@ -316,6 +319,23 @@ async def to_code(config):
         url = config[CONF_WEB_ASSETS_URL]
         if not url.endswith("/"):
             url += "/"
+        # Pin "@main" to the commit that is being built: jsDelivr caches the branch->commit mapping for hours
+        # (and browsers cache the files), so a branch URL can serve stale GUI files after a push.  A commit URL is
+        # immutable, therefore always consistent with this firmware build.
+        if "@main/" in url:
+            import subprocess
+            try:
+                repo = Path(CORE.relative_config_path(config[CONF_WEB_DIR])).resolve()
+                sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short=12", "HEAD"],
+                                     capture_output=True, text=True, check=True).stdout.strip()
+                dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--", "."],
+                                       capture_output=True, text=True).stdout.strip()
+                url = url.replace("@main/", f"@{sha}/")
+                if dirty:
+                    _LOGGER.warning("web/ has uncommitted changes; the GUI URL %s points at the last commit", url)
+                _LOGGER.info("GUI assets pinned to %s", url)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("could not pin GUI assets to a commit (%s); using %s", err, url)
         cg.add(hub.set_assets_url(url))
     else:
         web_dir = Path(CORE.relative_config_path(config[CONF_WEB_DIR]))
