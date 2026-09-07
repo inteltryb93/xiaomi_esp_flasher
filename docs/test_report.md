@@ -169,3 +169,12 @@ the device rebooted before answering the final read (`final status read failed (
 peer – expected on success), reconnect on the 3rd attempt (weak link), `Software Revision String: V5.9`,
 `Done: OTA verified: firmware 4.7 -> 5.9`. Home Assistant/GUI: `firmware 5.9`, `ota_result success 4.7 -> 5.9`.
 The thermometer is not defective; it behaved exactly as the Telink bootloader should on an incomplete image.
+
+## Online firmware check (GitHub over TLS without certificate verification)
+
+`POST /api/firmware/check` → `Fetching firmware manifest from GitHub...` → `Online manifest: 44 entries` (≈1 s).
+Remote entries are merged with the bundled manifest by file name (list stays at 45 entries, images available
+offline keep `bundled:` ids; remote-only images would appear as `remote:`). A first attempt with two separate
+lists panicked the ESP32 (reset reason 4) while building a ~25 KB JSON document with only 25 KB free heap – fixed
+by merging the lists and serialising both `/api/firmware` and `/api/devices` entry by entry. Min free heap during
+the TLS handshake: 19.8 KB. Flash: 1 671 082 B (98.1 %) with TLS, 1 577 466 B (92.6 %) without `remote_manifest`.

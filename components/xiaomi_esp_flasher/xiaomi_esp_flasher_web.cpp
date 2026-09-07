@@ -469,17 +469,24 @@ std::string XiaomiEspFlasher::json_device_(const XiaomiDevice &d, bool full) {
 }
 
 std::string XiaomiEspFlasher::json_devices_() {
-  JsonDocument doc;
-  JsonArray arr = doc.to<JsonArray>();
+  // one small JsonDocument per device instead of one big one: keeps the peak heap low on the ESP32-C3
+  std::string out = "[";
   {
     LockGuard g(this->mutex_);
+    bool first = true;
     for (auto &d : this->devices_) {
-      JsonObject o = arr.add<JsonObject>();
+      JsonDocument doc;
+      JsonObject o = doc.to<JsonObject>();
       this->device_to_json_(o, *d, false);
+      if (!first)
+        out += ",";
+      first = false;
+      std::string one;
+      serializeJson(doc, one);  // serializeJson(doc, std::string&) replaces the target, so append via a temp
+      out += one;
     }
   }
-  std::string out;
-  serializeJson(doc, out);
+  out += "]";
   return out;
 }
 
@@ -533,11 +540,12 @@ std::string XiaomiEspFlasher::json_status_() {
 }
 
 std::string XiaomiEspFlasher::json_firmware_() {
-  JsonDocument doc;
-  JsonArray arr = doc.to<JsonArray>();
+  std::string out = "[";
   if (this->provider_) {
+    bool first = true;
     for (auto &fi : this->provider_->get_available_firmwares()) {
-      JsonObject o = arr.add<JsonObject>();
+      JsonDocument doc;
+      JsonObject o = doc.to<JsonObject>();
       o["id"] = fi.id;
       o["name"] = fi.name;
       o["version"] = fi.version;
@@ -550,10 +558,15 @@ std::string XiaomiEspFlasher::json_firmware_() {
       for (int i : fi.hw_ids) ids.add(i);
       JsonArray names = o["hw_names"].to<JsonArray>();
       for (int i : fi.hw_ids) names.add(hw_id_name(i));
+      if (!first)
+        out += ",";
+      first = false;
+      std::string one;
+      serializeJson(doc, one);  // serializeJson(doc, std::string&) replaces the target, so append via a temp
+      out += one;
     }
   }
-  std::string out;
-  serializeJson(doc, out);
+  out += "]";
   return out;
 }
 

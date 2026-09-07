@@ -273,10 +273,12 @@ async def to_code(config):
     if CONF_REMOTE_MANIFEST in config:
         cg.add_define("USE_XIAOMI_FLASHER_REMOTE")
         cg.add(hub.set_remote_manifest_url(config[CONF_REMOTE_MANIFEST]))
-        esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE", True)
-        esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN", True)
-        esp32.add_idf_sdkconfig_option("CONFIG_ESP_TLS_INSECURE", False)
-        for comp in ("esp_http_client", "esp-tls", "mbedtls"):
+        # HTTPS without certificate verification (project decision: saves ~110 KB of flash for the CA bundle;
+        # the only remote is GitHub and every downloaded image is validated by header + CRC32 anyway)
+        esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE", False)
+        esp32.add_idf_sdkconfig_option("CONFIG_ESP_TLS_INSECURE", True)
+        esp32.add_idf_sdkconfig_option("CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY", True)
+        for comp in ("esp_http_client", "esp-tls"):
             try:
                 esp32.include_builtin_idf_component(comp)
             except Exception:  # noqa: BLE001 - older/newer API differences

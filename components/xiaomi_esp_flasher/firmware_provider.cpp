@@ -6,7 +6,6 @@
 #include <cstring>
 #ifdef USE_XIAOMI_FLASHER_REMOTE
 #include <esp_http_client.h>
-#include <esp_crt_bundle.h>
 #endif
 
 namespace esphome {
@@ -140,10 +139,21 @@ std::vector<FirmwareInfo> LocalFirmwareProvider::get_available_firmwares() {
     out.push_back(fi);
   }
   for (auto &e : this->remote_) {
+    // same file name as a bundled/manifest entry -> merge (only annotate the source), keeps the list small
+    bool merged = false;
+    for (auto &fi : out) {
+      if (fi.name == e.name && fi.kind == e.kind) {
+        if (fi.size == 0)
+          fi.source = "remote: " + this->remote_base_ + e.file;
+        merged = true;
+        break;
+      }
+    }
+    if (merged)
+      continue;
     FirmwareInfo fi;
     this->build_info_(e, fi, "remote:", this->remote_base_ + e.file);
     fi.size = 0;  // unknown until downloaded
-    // if the store holds this exact file, expose it as downloaded
     if (this->store_ != nullptr && this->store_->has_image() && e.name == this->store_->header().name) {
       fi.size = this->store_->header().size;
       fi.crc32 = this->store_->header().crc32;
@@ -278,7 +288,8 @@ static bool http_get(const std::string &url, DlCtx &ctx, std::string &err) {
   cfg.event_handler = http_event;
   cfg.user_data = &ctx;
   cfg.timeout_ms = 15000;
-  cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  // TLS without server certificate verification (CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY); no CA bundle in flash
+  cfg.skip_cert_common_name_check = true;
   cfg.buffer_size = 2048;
   cfg.buffer_size_tx = 1024;
   cfg.max_redirection_count = 3;

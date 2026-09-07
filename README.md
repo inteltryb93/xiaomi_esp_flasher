@@ -84,8 +84,20 @@ Devices not listed are still discovered, identified and flashable from the GUI; 
 ```bash
 scripts/build.sh                    # = .venv/bin/esphome compile yaml/xiaomi_esp_flasher.yaml
 ```
-ESP32-C3 4 MB: ~1.67 MB per app slot (98 % used with `remote_manifest` – the TLS certificate bundle costs
-~90 KB; remove `remote_manifest` to get headroom).
+ESP32-C3 4 MB: ~1.67 MB per app slot. Measured flash budget (2026-09-07):
+
+| Build variant | Flash used |
+|---|---|
+| full, HTTPS with CA bundle (original) | 1 690 954 B (99.2 %) |
+| full, HTTPS **without certificate verification** (current default) | 1 671 082 B (98.1 %) |
+| without `remote_manifest` (no TLS stack / HTTP client at all) | 1 577 466 B (92.6 %) |
+
+The GUI (index.html + app.js + style.css, gzip) is only 15.6 KB (~1 %) and must work offline, so it stays in
+flash; the bundled `ATC_v59.bin` is 86 KB; the TLS stack + HTTP client needed for GitHub (which refuses plain
+HTTP) is ~90 KB. Certificate verification is deliberately disabled (`CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`):
+every downloaded image is validated by Telink header + CRC32 anyway. Drop `remote_manifest` if you need ~95 KB
+of headroom (firmware can still be uploaded through the GUI). Note the TLS handshake needs ~30 KB of heap
+(min free heap ≈ 20 KB during "Check online").
 
 ## 4. Flash the ESP32
 
