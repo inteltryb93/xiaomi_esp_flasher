@@ -150,7 +150,7 @@
     $q('#btn-scan').onclick = async () => { await post('/scan'); toast('Scan requested'); };
     $q('#btn-refresh').onclick = refreshDevices;
     $q('#btn-update-all').onclick = async () => {
-      const list = S.devices.filter((d) => d.update_available && d.compatible);
+      const list = S.devices.filter((d) => d.update_available && d.compatible && d.status !== 'offline');
       if (!list.length) return toast('No device with an available and compatible update', 'err');
       const ok = await modal(`<h3>Update all</h3><p>The following devices will be updated <b>sequentially</b>, each one verified before the next starts:</p><ul>${list.map((d) => `<li>${esc(d.display_name)} (${esc(d.mac)}): ${esc(d.firmware)} → ${esc(d.latest_version)}</li>`).join('')}</ul><p class="warnbox">Do not move the devices out of BLE range during the update.</p>`, [{ label: 'Cancel', value: false }, { label: 'Start updates', value: true, cls: 'danger' }]);
       if (ok) { await post('/queue/all'); toast('Update queue started'); }

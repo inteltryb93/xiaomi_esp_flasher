@@ -671,9 +671,13 @@ void XiaomiEspFlasher::loop() {
   }
   if (this->update_all_requested_.exchange(false)) {
     LockGuard g(this->mutex_);
-    for (auto &d : this->devices_)
-      if (d->update_available && d->compat.ok)
+    for (auto &d : this->devices_) {
+      bool in_range = d->last_seen_ms && (millis() - d->last_seen_ms) < 600000 && d->status != DeviceStatus::OFFLINE;
+      if (d->update_available && d->compat.ok && in_range)
         this->update_queue_.push_back(d->address);
+      else if (d->update_available && d->compat.ok)
+        this->logf("Update all: skipping %s (not seen recently)", d->mac);
+    }
     this->logf("Update queue: %u device(s)", (unsigned) this->update_queue_.size());
   }
 #ifdef USE_XIAOMI_FLASHER_REMOTE
@@ -963,8 +967,10 @@ void XiaomiEspFlasher::fail_session_(Error e, const std::string &msg) {
       this->dev_->last_ota_epoch = this->epoch_now_();
       this->last_ota_epoch_ = this->dev_->last_ota_epoch;
       this->last_ota_result_ = this->dev_->ota_result + " (" + this->dev_->mac + ")";
+      // the failed device is not retried automatically; the remaining devices of an "Update all" queue still run
       LockGuard g(this->mutex_);
-      this->update_queue_.clear();  // never continue an update queue after a failure
+      if (!this->update_queue_.empty())
+        ESP_LOGW(TAG, "OTA failed, continuing with the next queued device");
     }
   }
   this->ota_.abort(msg);
