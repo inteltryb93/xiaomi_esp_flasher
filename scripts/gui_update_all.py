@@ -4,6 +4,9 @@ ESP32 log until the update queue has finished.  Usage: gui_update_all.py <esp-ip
 import json, subprocess, sys, time, urllib.request, os
 import websocket
 host = sys.argv[1]; maxmin = int(sys.argv[2]) if len(sys.argv) > 2 else 25
+# optional: which toolbar button to press and which dialog button confirms it (default: Update all)
+btn_id = sys.argv[3] if len(sys.argv) > 3 else "btn-update-all"
+confirm = sys.argv[4] if len(sys.argv) > 4 else "Start updates"
 chrome = [c for c in ("/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium") if os.path.exists(c)][0]
 proc = subprocess.Popen([chrome, "--headless=new", "--disable-gpu", "--no-sandbox", "--remote-debugging-port=9225", "--remote-allow-origins=*",
                          "--window-size=1300,1000", "--user-data-dir=/tmp/xf-chrome-profile3", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -26,12 +29,12 @@ try:
     cmd("Page.navigate", url=f"http://{host}/#/")
     for _ in range(60):
         time.sleep(0.5)
-        if js("!!document.querySelector('#dev-rows tr') && !!document.querySelector('#btn-update-all')"): break
+        if js(f"!!document.querySelector('#dev-rows tr') && !!document.querySelector('#{btn_id}')"): break
     since = get("/log")["seq"]
-    js("document.querySelector('#btn-update-all').click()")
+    js(f"document.querySelector('#{btn_id}').click()")
     time.sleep(1)
     print("dialog:", js("(document.querySelector('#modal-box') || {}).innerText") )
-    js("Array.from(document.querySelectorAll('#modal-box .modal-btns button')).find(b => b.textContent === 'Start updates').click()")
+    js(f"Array.from(document.querySelectorAll('#modal-box .modal-btns button')).find(b => b.textContent === '{confirm}').click()")
     time.sleep(2)
     print("toast:", js("document.querySelector('#toast').textContent"))
     t0 = time.time(); idle = 0; last_badge = None; last_gui_log = None; opened = None; progress_samples = []

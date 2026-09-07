@@ -83,7 +83,7 @@
       const l = await api('/log?since=' + S.logSeq);
       l.lines.forEach((x) => { S.logSeq = x.seq; addLog(x.t, x.msg); });
       const o = await api('/ota/status');
-      handleEvent(Object.assign({ type: 'ota_progress', session: o.session, device: o.device }, o));
+      handleEvent(Object.assign({ type: 'ota_progress', session: o.session, device: o.device, job: o.job }, o));
       if (S.view === 'devices') refreshDevices();
       if (S.view === 'device' && S.current) refreshDevice(true);
     } catch (e) { $q('#conn-state').textContent = 'offline'; }
@@ -100,7 +100,7 @@
         if (ev.state === 'SUCCESS' || ev.state === 'ERROR') { refreshDevices(); if (S.current) refreshDevice(true); }
         break;
       case 'notify': if (PV.connected && ev.mac && ev.mac.toUpperCase() === PV.mac) pvNotify(ev.seq, ev.hex); break;
-      case 'ota_progress': S.ota = ev; renderProgress(); if (ev.session) setBadge(ev.session, 'flash', ev.device); break;
+      case 'ota_progress': S.ota = ev; renderProgress(); if (ev.session) setBadge(ev.session, ev.job || 'flash', ev.device); break;
       case 'device': if (S.view === 'devices') refreshDevices(); if (S.current && S.current.toUpperCase() === (ev.mac || '').toUpperCase()) refreshDevice(true); break;
       case 'result': toast(ev.msg, ev.ok ? 'ok' : 'err'); if (!ev.ok) addLog(0, 'ERROR ' + (ev.error || '') + ' ' + ev.msg); refreshDevices(); if (S.current) refreshDevice(true); break;
       default: break;

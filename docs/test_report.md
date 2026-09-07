@@ -232,3 +232,14 @@ queues a `set_name` job right after a verified update when the firmware dropped 
 
 Heap note: `min_free_heap` reached 6 132 B during the run (VERY_VERBOSE logging + SSE + browser polling +
 two OTAs). Lower the logger level to DEBUG for production use.
+
+## "Send default config to all" (new function, `POST /api/queue/defaults`, GUI button, HA button)
+
+Pressed in the GUI (`scripts/gui_update_all.py … btn-defaults-all "Send defaults to all"`, log
+`logs/defaults_all_run.log`): dialog listed the 5 reachable pvvx devices (`NaDworze` and `P3Korytarz` skipped:
+unknown firmware / not seen recently), then one `set_defaults` job per device, each `56` answered with the
+factory `55` frame and read back: Living Room (B1.7), P2Kuchnia (B1.4), ATC_B0E44A (B1.5), P3Kanciapa (B1.7),
+P3Sypialni (B1.9) – all `Device configuration reset to defaults` / `Done: configuration written and read back`
+within 1 min 48 s; status badge and OTA Log panel followed every step. Read-back of the test device:
+flg 0x87, flg2 0x10, adv 40 (2.5 s), meas 4, rf 169, latency 49, lcd 49, averaging 180 = pvvx `def_cfg`.
+Min free heap during the run: 4 984 B (VERY_VERBOSE) – lower the log level for production.

@@ -154,7 +154,8 @@ Add the ESPHome device (native API). Entities per configured thermometer: Temper
 Battery Voltage, RSSI, Firmware Version, Hardware Version, Model, Status, Last Seen, Update Status, Device Name,
 Update Available (binary), **Firmware Update** (`update` entity: installed/latest version, Install = OTA, Check =
 identify), buttons Identify / Flash Firmware / Set Time. Global: Flasher Status, Last Error, Detected
-Thermometers, Thermometers Needing Update, OTA Progress, OTA Active, BLE Scan, Update All, Check Firmware Online.
+Thermometers, Thermometers Needing Update, OTA Progress, OTA Active, BLE Scan, Update All, Check Firmware Online,
+Send Default Config To All Thermometers.
 
 ## 10. Troubleshooting
 
@@ -193,7 +194,7 @@ Thermometers, Thermometers Needing Update, OTA Progress, OTA Active, BLE Scan, U
 | GET | `/api/firmware` | available images (bundled / store / remote) |
 | POST | `/api/firmware/upload?name=&version=&hw=0,3&kind=custom&source=` | raw `.bin` body (octet-stream) into a fwstore slot |
 | POST | `/api/firmware/check` | fetch online manifest (if configured) |
-| POST | `/api/scan`, `/api/queue/all` | scan / update all |
+| POST | `/api/scan`, `/api/queue/all`, `/api/queue/defaults` | scan / update all / send default config (`56`) to every reachable pvvx device, sequentially |
 | GET | `/api/log?since=N`, `/api/ota/status`, `/api/events` (SSE) | log ring, OTA progress, live events |
 
 Error codes: `BLE_TIMEOUT DEVICE_NOT_FOUND DEVICE_UNSUPPORTED HW_UNKNOWN FW_UNKNOWN ACTIVATION_FAILED
