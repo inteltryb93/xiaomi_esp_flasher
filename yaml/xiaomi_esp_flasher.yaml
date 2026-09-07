@@ -77,8 +77,11 @@ xiaomi_esp_flasher:
   test_device_mac: ${test_device_mac}
   auto_identify: true
   identify_interval: 6h
-  # Uncomment to allow fetching firmware.json / images from GitHub (HTTPS, adds ~90 KB flash):
-  remote_manifest: https://raw.githubusercontent.com/pvvx/ATC_MiThermometer/master/firmware.json
+  # Firmware images and firmware.json are fetched from GitHub by the *browser* and pushed to the ESP32
+  # (no TLS stack on the ESP32). Set remote_manifest to let the ESP32 download them itself (+~95 KB flash).
+  # remote_manifest: https://raw.githubusercontent.com/pvvx/ATC_MiThermometer/master/firmware.json
+  web_assets: remote          # GUI from https://cdn.jsdelivr.net/gh/inteltryb93/xiaomi_esp_flasher@main/web/ ; "embedded" = offline
+  bundle_firmware: false      # true = compile firmware/*.bin into the image (offline OTA source)
   status:
     name: Flasher Status
   last_error:

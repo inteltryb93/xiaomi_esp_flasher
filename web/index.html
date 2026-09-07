@@ -100,88 +100,17 @@
     </div>
   </section>
   <section class="tab hidden" data-tab="config">
-    <div class="card" id="cfg-card">
-      <div class="toolbar">
-        <button id="cfg-read" class="primary">Read Config</button>
-        <button id="cfg-defaults">Set Defaults</button>
-        <button id="cfg-send" class="warn">Send Config</button>
-        <button id="cfg-device-defaults" class="danger small">Reset device to factory defaults</button>
-      </div>
-      <p id="cfg-note" class="muted"></p>
-      <div class="tabs sub" id="cfg-tabs">
-        <button data-ctab="general" class="active">General</button>
-        <button data-ctab="display">Display</button>
-        <button data-ctab="advertising">Advertising</button>
-        <button data-ctab="comfort">Comfort</button>
-        <button data-ctab="time">Time</button>
-        <button data-ctab="security">Security</button>
-        <button data-ctab="advanced">Advanced</button>
-      </div>
-      <form id="cfg-form" onsubmit="return false">
-        <div class="ctab" data-ctab="general">
-          <label>Temperature offset (°C) <input type="number" step="0.01" id="c-temp_offset"></label>
-          <label>Humidity offset (%) <input type="number" step="0.01" id="c-humi_offset"></label>
-          <label>Measure interval (× advertising interval, 1..25) <input type="number" min="1" max="255" id="c-measure_interval"></label>
-          <label>Averaging to flash memory (× measure interval, 0 = off) <input type="number" min="0" max="255" id="c-av_meas_mem"></label>
-          <label><input type="checkbox" id="c-tx_measures"> Tx measures when connected</label>
-          <label><input type="checkbox" id="c-lp_measures"> Sensor in low-power mode</label>
-        </div>
-        <div class="ctab hidden" data-ctab="display">
-          <label>Temperature unit <select id="c-temp_fahrenheit"><option value="0">°C</option><option value="1">°F</option></select></label>
-          <label>Smiley <select id="c-smiley">
-            <option value="0">off</option><option value="1">^_^</option><option value="2">-^-</option><option value="3">ooo</option>
-            <option value="4">( )</option><option value="5">(^_^) happy</option><option value="6">(-^-) sad</option><option value="7">(ooo)</option></select></label>
-          <label><input type="checkbox" id="c-comfort_smiley"> Comfort mode (smiley follows comfort parameters)</label>
-          <label><input type="checkbox" id="c-show_battery"> Show battery</label>
-          <label><input type="checkbox" id="c-show_clock"> Show clock (rotates with temperature/humidity)</label>
-          <label><input type="checkbox" id="c-screen_off"> Screen off (fw ≥ 4.3)</label>
-          <label>Minimum LCD refresh (s, 0.5..12.75) <input type="number" step="0.05" min="0.5" max="12.75" id="c-lcd_tint"></label>
-        </div>
-        <div class="ctab hidden" data-ctab="advertising">
-          <label>Advertising type <select id="c-advertising_type"></select></label>
-          <label>Advertising interval (ms, step 62.5) <input type="number" step="62.5" min="62.5" max="10000" id="c-advertising_interval"></label>
-          <label><input type="checkbox" id="c-adv_flags"> AdFlags (third-party software support)</label>
-          <label><input type="checkbox" id="c-adv_crypto"> Encrypted beacon (bindkey)</label>
-          <label><input type="checkbox" id="c-bt5phy"> BT5+ PHY</label>
-          <label><input type="checkbox" id="c-longrange"> LE Long Range (Coded PHY)</label>
-          <label>RF TX power <select id="c-rf_tx_power"></select></label>
-          <label>Connect latency (ms, step 20) <input type="number" step="20" min="0" max="1000" id="c-connect_latency"></label>
-        </div>
-        <div class="ctab hidden" data-ctab="comfort">
-          <label>Temperature low (°C) <input type="number" step="0.01" id="c-cmf_temp_lo"></label>
-          <label>Temperature high (°C) <input type="number" step="0.01" id="c-cmf_temp_hi"></label>
-          <label>Humidity low (%) <input type="number" step="0.01" id="c-cmf_humi_lo"></label>
-          <label>Humidity high (%) <input type="number" step="0.01" id="c-cmf_humi_hi"></label>
-        </div>
-        <div class="ctab hidden" data-ctab="time">
-          <dl id="c-time"></dl>
-          <div class="btnrow"><button id="c-settime" class="primary">Set time (ESP32 clock)</button></div>
-        </div>
-        <div class="ctab hidden" data-ctab="security">
-          <label>Device name (1..18 chars, empty = default) <input id="c-devname" maxlength="18"></label>
-          <div class="btnrow"><button id="c-setname">Set name</button></div>
-          <label>PIN code (000000 disables) <input id="c-pin" maxlength="6" pattern="[0-9]{6}"></label>
-          <div class="btnrow"><button id="c-setpin" class="danger">Set PIN</button></div>
-          <p class="muted">Warning: a forgotten PIN can only be removed with a hardware flasher.</p>
-        </div>
-        <div class="ctab hidden" data-ctab="advanced">
-          <h4>Sensor calibration (fw ≥ 4.7): T = RegT·Tk/65536 + Tz</h4>
-          <label>Temperature slope Tk (×0.01) <input type="number" id="c-temp_k"></label>
-          <label>Temperature zero Tz (×0.01 °C) <input type="number" id="c-temp_z"></label>
-          <label>Humidity slope Hk (×0.01) <input type="number" id="c-humi_k"></label>
-          <label>Humidity zero Hz (×0.01 %) <input type="number" id="c-humi_z"></label>
-          <h4>Trigger / reed switch</h4>
-          <label>Temperature threshold (°C) <input type="number" step="0.01" id="c-trg_temp_thr"></label>
-          <label>Humidity threshold (%) <input type="number" step="0.01" id="c-trg_humi_thr"></label>
-          <label>Temperature hysteresis (°C) <input type="number" step="0.01" id="c-trg_temp_hst"></label>
-          <label>Humidity hysteresis (%) <input type="number" step="0.01" id="c-trg_humi_hst"></label>
-          <label>Reed switch mode <select id="c-rds_type"><option value="0">None</option><option value="1">Switch</option><option value="2">Counter</option><option value="3">Connect</option></select></label>
-          <label><input type="checkbox" id="c-rds_invert"> Invert RS event</label>
-          <label>RS report interval (s) <input type="number" id="c-rds_rpint"></label>
-          <div class="btnrow"><button id="c-reboot" class="danger">Reboot device</button></div>
-          <label><input type="checkbox" id="c-send-advanced"> include sensor calibration and trigger blocks in Send Config</label>
-        </div>
-      </form>
+    <!-- Port of the pvvx TelinkMiFlasher "custom firmware" section: same HTML ids, same JS (pvvx_config.js),
+         same look (styles scoped under #cfg-pvvx). The BLE link is held by the ESP32 (Connect/Disconnect). -->
+    <div id="cfg-pvvx" class="telFlasherClass">
+      <button type="button" id="cfg-connect">Connect</button>
+      <button type="button" id="cfg-disconnect">Disconnect</button>
+      <span id="MAC"></span>
+      <div id="percent">Status: Disconnected</div>
+      <div id="tempHumiData">Temp/Humidity: waiting notify for data after connecting</div>
+      <div id="custcfg"></div>
+      <div id="addSensors"></div>
+      <div id="ldfrmw"></div>
     </div>
   </section>
   <section class="tab hidden" data-tab="diag">
@@ -192,7 +121,6 @@
 <template id="tpl-firmware">
   <div class="toolbar">
     <h2>Firmware repository</h2><span class="grow"></span>
-    <button id="fw-check" class="primary">Check online (GitHub)</button>
   </div>
   <div class="tablewrap"><table><thead><tr><th>ID</th><th>File</th><th>Version</th><th>Kind</th><th>Size</th><th>CRC32</th><th>Hardware</th><th>Source</th></tr></thead><tbody id="fw-rows"></tbody></table></div>
   <div class="card">
@@ -204,6 +132,12 @@
     <div class="btnrow"><button id="fw-upload" class="warn">Upload to ESP32</button></div>
     <div id="fw-upload-result" class="muted"></div>
   </div>
+  <div class="card">
+    <h3>GitHub (pvvx/ATC_MiThermometer)</h3>
+    <p class="muted">The browser downloads <code>firmware.json</code> and the images from GitHub and stores them on the ESP32 (no internet access needed by the ESP32 itself). Manifest: <span id="fw-manifest-info">?</span></p>
+    <div class="btnrow"><button id="fw-refresh-manifest" class="primary">Refresh manifest from GitHub</button></div>
+    <div id="fw-remote-list"></div>
+  </div>
 </template>
 
 <template id="tpl-diagnostics">
@@ -211,6 +145,7 @@
   <div class="card"><dl id="diag-list"></dl></div>
 </template>
 
+<script src="/pvvx_config.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

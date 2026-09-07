@@ -89,3 +89,21 @@ pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; 
   button.big { width: 100%; }
   form input[type="number"], form input[type="text"], form input:not([type]), form select { width: 100%; }
 }
+
+/* ---- pvvx TelinkMiFlasher look for the configuration tab (from pvvx.github.io styles.css) ---- */
+#cfg-pvvx { font-family: Arial, 'Open Sans', sans-serif; color: #204056; background: #fff; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); line-height: 1.5; }
+:root[data-theme="dark"] #cfg-pvvx { background: #fff; color: #204056; }
+#cfg-pvvx hr { height: 10px; border: 0; box-shadow: 0 10px 10px -10px #8c8b8b inset; }
+#cfg-pvvx .button, #cfg-pvvx [type='button'], #cfg-pvvx button { background-color: #1a73e8; border: none; border-radius: 4px; color: white; padding: 8px 24px; text-align: center; text-decoration: none; display: inline-block; font-size: 14px; margin: 6px 6px; cursor: pointer; box-shadow: 0 3px 1px -2px #0003, 0 2px 2px #00000024, 0 1px 5px #0000001f; }
+#cfg-pvvx [type='button'].ok { background-color: #4CAF50; }
+#cfg-pvvx [type='button'].danger { background-color: #f44336; }
+#cfg-pvvx [type='button']:disabled { cursor: not-allowed; opacity: 0.6; }
+#cfg-pvvx input[type="checkbox"] + label { margin-right: 8px; }
+#cfg-pvvx div#percent { font-style: italic; font-size: 16px; text-align: center; background-color: #eef6fc; padding-top: 5px; padding-bottom: 5px; margin-top: 8px; }
+#cfg-pvvx div#tempHumiData { text-align: center; background-color: #eef6fc; padding-top: 5px; padding-bottom: 5px; }
+#cfg-pvvx div#MAC { font-style: smaller; margin: 8px; }
+#cfg-pvvx input { padding: 4px; margin: 4px; font: inherit; border: 1px solid #767676; border-radius: 2px; background: #fff; color: #000; min-width: 0; width: auto; }
+#cfg-pvvx select { padding: 4px; font: inherit; background: #fff; color: #000; border: 1px solid #767676; border-radius: 2px; min-width: 0; width: auto; }
+#cfg-pvvx input[type="checkbox"] { transform: none; margin: 3px 3px 3px 4px; }
+#cfg-pvvx label { display: inline; margin: 0; }
+#cfg-pvvx a { color: #1a73e8; }

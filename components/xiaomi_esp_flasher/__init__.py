@@ -79,6 +79,10 @@ CONF_REMOTE_MANIFEST = "remote_manifest"
 CONF_FIRMWARE_DIR = "firmware_dir"
 CONF_WEB_DIR = "web_dir"
 CONF_FWSTORE_SIZE = "fwstore_size"
+CONF_WEB_ASSETS = "web_assets"
+CONF_WEB_ASSETS_URL = "web_assets_url"
+CONF_BUNDLE_FIRMWARE = "bundle_firmware"
+DEFAULT_ASSETS_URL = "https://cdn.jsdelivr.net/gh/inteltryb93/xiaomi_esp_flasher@main/web/"
 CONF_DEVICES = "devices"
 CONF_BATTERY = "battery"
 CONF_FIRMWARE = "firmware"
@@ -196,7 +200,14 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_REMOTE_MANIFEST): cv.url,
             cv.Optional(CONF_FIRMWARE_DIR, default="../firmware"): cv.directory,
             cv.Optional(CONF_WEB_DIR, default="../web"): cv.directory,
-            cv.Optional(CONF_FWSTORE_SIZE, default=0x40000): cv.int_range(min=0x10000, max=0x100000),
+            cv.Optional(CONF_FWSTORE_SIZE, default=0x40000): cv.int_range(min=0x20000, max=0x100000),
+            # "remote": GUI files come from a CDN (GitHub via jsDelivr) – saves ~16 KB of flash, needs internet in the browser
+            # "embedded": GUI compiled into the ESP32 image (offline)
+            cv.Optional(CONF_WEB_ASSETS, default="remote"): cv.one_of("remote", "embedded", lower=True),
+            cv.Optional(CONF_WEB_ASSETS_URL, default=DEFAULT_ASSETS_URL): cv.url,
+            # compile firmware/*.bin into the image (offline OTA source); default off – images are fetched from
+            # GitHub by the browser and stored in the fwstore partition instead
+            cv.Optional(CONF_BUNDLE_FIRMWARE, default=False): cv.boolean,
             cv.Optional(CONF_DEVICES, default=[]): cv.ensure_list(DEVICE_SCHEMA),
             cv.Optional(CONF_STATUS): text_sensor.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC, icon="mdi:state-machine"),
             cv.Optional(CONF_LAST_ERROR): text_sensor.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC, icon="mdi:alert"),
@@ -290,20 +301,29 @@ async def to_code(config):
     manifest_text = manifest_path.read_text() if manifest_path.exists() else '{"version":0}'
     json.loads(manifest_text)  # validate
     cg.add(hub.set_manifest_json(manifest_text))
-    for i, bin_path in enumerate(sorted(fw_dir.glob("*.bin"))):
-        data = bin_path.read_bytes()
-        arr_id = cg.RawExpression(f"XF_FW_{i}")
-        cg.add_global(cg.RawExpression(
-            f"static const uint8_t XF_FW_{i}[{len(data)}] PROGMEM = {{{', '.join(str(b) for b in data)}}}"))
-        cg.add(hub.add_bundled_image(bin_path.name, arr_id, len(data)))
+    if config[CONF_BUNDLE_FIRMWARE]:
+        for i, bin_path in enumerate(sorted(fw_dir.glob("*.bin"))):
+            data = bin_path.read_bytes()
+            arr_id = cg.RawExpression(f"XF_FW_{i}")
+            cg.add_global(cg.RawExpression(
+                f"static const uint8_t XF_FW_{i}[{len(data)}] PROGMEM = {{{', '.join(str(b) for b in data)}}}"))
+            cg.add(hub.add_bundled_image(bin_path.name, arr_id, len(data)))
 
-    # ---- web assets (gzip'd, served from flash) ----
-    web_dir = Path(CORE.relative_config_path(config[CONF_WEB_DIR]))
-    html = _add_gz_asset("HTML", web_dir / "index.html")
-    js = _add_gz_asset("JS", web_dir / "app.js")
-    css = _add_gz_asset("CSS", web_dir / "style.css")
-    cg.add(hub.set_assets(cg.RawExpression(html[0]), cg.RawExpression(html[1]), cg.RawExpression(js[0]),
-                          cg.RawExpression(js[1]), cg.RawExpression(css[0]), cg.RawExpression(css[1])))
+    # ---- web assets: from a CDN (default) or gzip'd in flash ----
+    if config[CONF_WEB_ASSETS] == "remote":
+        url = config[CONF_WEB_ASSETS_URL]
+        if not url.endswith("/"):
+            url += "/"
+        cg.add(hub.set_assets_url(url))
+    else:
+        web_dir = Path(CORE.relative_config_path(config[CONF_WEB_DIR]))
+        html = _add_gz_asset("HTML", web_dir / "index.html")
+        js = _add_gz_asset("JS", web_dir / "app.js")
+        css = _add_gz_asset("CSS", web_dir / "style.css")
+        pvvx = _add_gz_asset("PVVX", web_dir / "pvvx_config.js")
+        cg.add(hub.set_assets(cg.RawExpression(html[0]), cg.RawExpression(html[1]), cg.RawExpression(js[0]),
+                              cg.RawExpression(js[1]), cg.RawExpression(css[0]), cg.RawExpression(css[1]),
+                              cg.RawExpression(pvvx[0]), cg.RawExpression(pvvx[1])))
 
     # ---- global entities ----
     if CONF_STATUS in config:

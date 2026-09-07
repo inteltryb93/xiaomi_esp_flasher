@@ -55,7 +55,7 @@ enum class SessionState : uint8_t {
 const char *session_state_name(SessionState s);
 
 enum class JobType : uint8_t {
-  NONE = 0, IDENTIFY, READ_CONFIG, WRITE_CONFIG, SET_DEFAULTS, SET_TIME, SET_NAME, SET_PIN, REBOOT, ACTIVATE, FLASH,
+  NONE = 0, IDENTIFY, READ_CONFIG, WRITE_CONFIG, SET_DEFAULTS, SET_TIME, SET_NAME, SET_PIN, REBOOT, ACTIVATE, FLASH, CONNECT,
 };
 const char *job_type_name(JobType t);
 
@@ -76,6 +76,12 @@ struct Job {
   uint32_t pin{0};
   MiKeys keys;
   bool use_login{false};
+};
+
+struct NotifyLine {
+  uint32_t seq;
+  uint64_t mac;
+  std::string hex;
 };
 
 struct LogLine {
@@ -153,9 +159,13 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   void set_manifest_json(const char *json) { this->manifest_json_ = json; }
   void add_bundled_image(const char *name, const uint8_t *data, size_t size) { this->bundled_.push_back({name, data, size}); }
   void set_remote_manifest_url(const std::string &url) { this->remote_url_ = url; }
-  void set_assets(const uint8_t *html, size_t html_len, const uint8_t *js, size_t js_len, const uint8_t *css, size_t css_len) {
+  void set_assets(const uint8_t *html, size_t html_len, const uint8_t *js, size_t js_len, const uint8_t *css, size_t css_len,
+                  const uint8_t *pvvx, size_t pvvx_len) {
     this->html_ = html; this->html_len_ = html_len; this->js_ = js; this->js_len_ = js_len; this->css_ = css; this->css_len_ = css_len;
+    this->pvvx_js_ = pvvx; this->pvvx_js_len_ = pvvx_len;
   }
+  // GUI files served from a CDN (GitHub via jsDelivr) instead of flash: "/" becomes a tiny bootstrap page
+  void set_assets_url(const std::string &url) { this->assets_url_ = url; }
   void add_device_entities(const DeviceEntities &e) { this->entities_.push_back(e); }
 #ifdef USE_TEXT_SENSOR
   void set_status_text_sensor(text_sensor::TextSensor *s) { this->status_sensor_ = s; }
@@ -195,6 +205,10 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   void request_check_online();
   void forget_device(uint64_t mac);
   void set_alias(uint64_t mac, const std::string &alias);
+  // raw command bridge (pvvx-style GUI): valid while a CONNECT job holds the link
+  bool hold_active(uint64_t mac) const;
+  bool queue_raw_command(uint64_t mac, const std::vector<uint8_t> &payload, std::string &err);
+  void release_hold() { this->hold_release_ = true; this->enable_loop_soon_any_context(); }
   XiaomiDevice *find_device(uint64_t mac);
   const XiaomiDevice *find_device(uint64_t mac) const;
   bool session_active() const { return this->state_ != SessionState::IDLE && this->state_ != SessionState::SUCCESS && this->state_ != SessionState::ERROR; }
@@ -264,6 +278,9 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   std::string json_firmware_();
   std::string json_log_(uint32_t since);
   std::string json_ota_status_();
+  std::string json_notify_(uint64_t mac, uint32_t since);
+  void load_manifest_pref_();
+  bool save_manifest_pref_(const std::string &json);
   void device_to_json_(JsonObject o, const XiaomiDevice &d, bool full);
   void handle_sse_(AsyncWebServerRequest *req);
   static void sse_free_ctx_(void *ctx);
@@ -298,8 +315,11 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   bool auto_identify_{true};
   uint32_t identify_interval_s_{6 * 3600};
   uint32_t last_auto_identify_ms_{0};
-  const uint8_t *html_{nullptr}, *js_{nullptr}, *css_{nullptr};
-  size_t html_len_{0}, js_len_{0}, css_len_{0};
+  const uint8_t *html_{nullptr}, *js_{nullptr}, *css_{nullptr}, *pvvx_js_{nullptr};
+  size_t html_len_{0}, js_len_{0}, css_len_{0}, pvvx_js_len_{0};
+  std::string assets_url_;
+  ESPPreferenceObject manifest_pref_;
+  std::string runtime_manifest_;
   ESPPreferenceObject pref_;
 
   // session
@@ -337,6 +357,11 @@ class XiaomiEspFlasher : public Component, public espbt::ESPBTDeviceListener, pu
   std::deque<LogLine> log_;
   uint32_t log_seq_{0};
   std::deque<std::string> events_;
+  std::deque<NotifyLine> notify_;
+  uint32_t notify_seq_{0};
+  std::deque<std::vector<uint8_t>> cmd_queue_;
+  bool hold_release_{false};
+  uint32_t hold_last_activity_{0};
   std::vector<SseClient *> sse_;
   std::atomic<bool> scan_requested_{false};
   std::atomic<bool> check_online_requested_{false};

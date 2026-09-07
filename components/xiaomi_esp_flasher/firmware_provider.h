@@ -61,6 +61,8 @@ class LocalFirmwareProvider : public FirmwareProvider {
   bool open_image(const std::string &id, ImageReader &reader, size_t &size) override;
   // remote manifest (same format) merged in by the remote provider
   void set_remote_entries(std::vector<ManifestEntry> entries, const std::string &base_url);
+  // replace the manifest at runtime (pushed by the browser from GitHub); returns false if it does not parse
+  bool set_manifest(const std::string &json, std::string &err);
   const std::vector<ManifestEntry> &remote_entries() const { return this->remote_; }
   const std::string &remote_base_url() const { return this->remote_base_; }
   int manifest_version() const { return this->manifest_version_; }
@@ -69,6 +71,7 @@ class LocalFirmwareProvider : public FirmwareProvider {
   void build_info_(const ManifestEntry &e, FirmwareInfo &fi, const std::string &prefix, const std::string &source);
   const BundledImage *find_bundled_(const std::string &name);
   const char *manifest_json_;
+  std::string runtime_manifest_;
   std::vector<BundledImage> images_;
   FirmwareStore *store_;
   std::vector<ManifestEntry> bundled_;

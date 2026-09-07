@@ -12,6 +12,8 @@
 #include "esphome/components/network/util.h"
 #include "esphome/components/web_server_idf/web_server_idf.h"
 #include <esp_http_server.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_heap_caps.h>
 #include <esp_chip_info.h>
 #include <esp_system.h>
@@ -32,7 +34,7 @@ static std::string url_of(AsyncWebServerRequest *req) {
 
 bool XiaomiEspFlasher::canHandle(AsyncWebServerRequest *request) const {
   std::string url = url_of(request);
-  if (url == "/" || url == "/index.html" || url == "/app.js" || url == "/style.css")
+  if (url == "/" || url == "/index.html" || url == "/app.js" || url == "/style.css" || url == "/pvvx_config.js")
     return true;
   return url.rfind("/api/", 0) == 0;
 }
@@ -59,7 +61,7 @@ void XiaomiEspFlasher::handleBody(AsyncWebServerRequest *request, uint8_t *data,
         return;
       }
       std::string err;
-      if (!this->store_.begin_write(total, err)) {
+      if (!this->store_.begin_write(total, this->upload_.name, err)) {
         this->upload_.failed = true;
         this->upload_.err = err;
         return;
@@ -116,9 +118,33 @@ void XiaomiEspFlasher::handle_get_(AsyncWebServerRequest *req, const std::string
     r->addHeader("Cache-Control", "no-cache");
     req->send(r);
   };
+  if (!this->assets_url_.empty()) {
+    // GUI files live on a CDN (GitHub via jsDelivr). "/" is a tiny bootstrap that fetches index.html from the CDN
+    // and writes it into this origin, so the page keeps talking to the ESP32 at /api without CORS games;
+    // the script/style links inside it are redirected to the CDN.
+    if (url == "/" || url == "/index.html") {
+      std::string b = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Xiaomi ESP Flasher</title></head><body style=\"font-family:sans-serif;padding:1rem\">Loading GUI from <code>" +
+                      this->assets_url_ + "</code> …<script>fetch('" + this->assets_url_ +
+                      "index.html',{cache:'no-cache'}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text()}).then(t=>{document.open();document.write(t);document.close();}).catch(e=>{document.body.innerHTML='<p>Cannot load the GUI from the internet ('+e.message+'). This ESP32 build serves the GUI from a CDN; use a build with <code>web_assets: embedded</code> for offline use.</p><p><a href=\"/api/status\">/api/status</a> · <a href=\"/api/devices\">/api/devices</a></p>';});</script></body></html>";
+      AsyncWebServerResponse *r = req->beginResponse(200, "text/html", b);
+      r->addHeader("Cache-Control", "no-cache");
+      req->send(r);
+      return;
+    }
+    if (url == "/app.js" || url == "/style.css" || url == "/pvvx_config.js") {
+      req->redirect(this->assets_url_ + url.substr(1));
+      return;
+    }
+  }
   if (url == "/" || url == "/index.html") { serve(this->html_, this->html_len_, "text/html"); return; }
   if (url == "/app.js") { serve(this->js_, this->js_len_, "application/javascript"); return; }
   if (url == "/style.css") { serve(this->css_, this->css_len_, "text/css"); return; }
+  if (url == "/pvvx_config.js") { serve(this->pvvx_js_, this->pvvx_js_len_, "application/javascript"); return; }
+  if (url == "/api/firmware/manifest") {
+    std::string m = this->runtime_manifest_.empty() ? std::string(this->manifest_json_) : this->runtime_manifest_;
+    this->send_json_(req, 200, m);
+    return;
+  }
   if (url == "/api/status") { this->send_json_(req, 200, this->json_status_()); return; }
   if (url == "/api/devices") { this->send_json_(req, 200, this->json_devices_()); return; }
   if (url == "/api/firmware") { this->send_json_(req, 200, this->json_firmware_()); return; }
@@ -139,8 +165,27 @@ void XiaomiEspFlasher::handle_get_(AsyncWebServerRequest *req, const std::string
     const XiaomiDevice *d = this->find_device(mac);
     if (d == nullptr) { this->send_json_(req, 404, "{\"ok\":false,\"error\":\"DEVICE_NOT_FOUND\"}"); return; }
     if (tail == "" || tail == "config") { this->send_json_(req, 200, this->json_device_(*d, true)); return; }
+    if (tail == "notify") {
+      uint32_t since = req->hasArg("since") ? strtoul(req->arg("since").c_str(), nullptr, 10) : 0;
+      this->send_json_(req, 200, this->json_notify_(mac, since));
+      return;
+    }
   }
   req->send(404);
+}
+
+std::string XiaomiEspFlasher::json_notify_(uint64_t mac, uint32_t since) {
+  // mutex_ is already held by the caller (handle_get_) or taken here for the cmd path
+  std::string out = "{\"seq\":" + std::to_string(this->notify_seq_) + ",\"connected\":" + (this->hold_active(mac) ? "true" : "false") + ",\"notify\":[";
+  bool first = true;
+  for (auto &n : this->notify_) {
+    if (n.seq <= since || n.mac != mac) continue;
+    if (!first) out += ",";
+    first = false;
+    out += "{\"seq\":" + std::to_string(n.seq) + ",\"hex\":\"" + n.hex + "\"}";
+  }
+  out += "]}";
+  return out;
 }
 
 static uint64_t hw_ids_mask(const std::vector<int> &ids) {
@@ -157,6 +202,19 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
   if (url == "/api/scan") { this->request_scan(); ok("scan requested"); return; }
   if (url == "/api/queue/all") { this->request_update_all(); ok("update all queued"); return; }
   if (url == "/api/firmware/check") { this->request_check_online(); ok("online check requested"); return; }
+  if (url == "/api/firmware/manifest") {
+    // firmware.json fetched by the browser from GitHub and pushed here (no TLS stack on the ESP32)
+    std::string err;
+    if (body.size() < 10 || body.size() > 3070) { bad(422, "INVALID_REQUEST", "manifest must be 10..3070 bytes"); return; }
+    if (!this->provider_->set_manifest(body, err)) { bad(422, "INVALID_REQUEST", err); return; }
+    this->runtime_manifest_ = body;
+    this->save_manifest_pref_(body);
+    for (auto &d : this->devices_) this->recompute_eligibility_(*d);
+    this->needs_global_publish_ = true;
+    this->logf("Firmware manifest updated from the browser: version %s", version_from_bcd(this->provider_->manifest_version()).c_str());
+    this->send_json_(req, 200, "{\"ok\":true,\"version\":\"" + version_from_bcd(this->provider_->manifest_version()) + "\"}");
+    return;
+  }
   if (url == "/api/firmware/upload") {
     Upload u = this->upload_;
     this->upload_ = Upload{};
@@ -177,11 +235,21 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
     }
     std::string version = req->hasArg("version") ? req->arg("version") : "";
     ImageKind kind = ImageKind::USER_UPLOAD;
+    if (req->hasArg("kind")) {
+      std::string k = req->arg("kind");
+      if (k == "custom") kind = ImageKind::CUSTOM;
+      else if (k == "beta") kind = ImageKind::BETA;
+      else if (k == "original") kind = ImageKind::ORIGINAL;
+      else if (k == "signed") kind = ImageKind::SIGNED;
+    }
     std::string err;
-    if (!this->store_.finish_write(u.name, version, kind, hw_ids_mask(ids), "upload", err)) { bad(422, "INVALID_IMAGE", err); return; }
+    std::string src = req->hasArg("source") ? req->arg("source") : "upload";
+    if (!this->store_.finish_write(u.name, version, kind, hw_ids_mask(ids), src, err)) { bad(422, "INVALID_IMAGE", err); return; }
     this->logf("Uploaded firmware %s (%u bytes) stored", u.name.c_str(), (unsigned) u.total);
+    StoredImage img;
     FirmwareInfo fi;
-    this->store_.get_info(fi);
+    if (this->store_.find(u.name, img)) this->store_.get_info(img, fi);
+    for (auto &d : this->devices_) this->recompute_eligibility_(*d);
     this->needs_global_publish_ = true;
     this->send_json_(req, 200, "{\"ok\":true,\"id\":\"" + fi.id + "\",\"size\":" + std::to_string(fi.size) + ",\"crc32\":\"" + format_hex(fi.crc32) + "\"}");
     return;
@@ -204,6 +272,44 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
       return;
     }
     if (tail == "forget") { this->forget_device(mac); ok("forgotten"); return; }
+    if (tail == "disconnect") {
+      if (this->hold_active(mac)) this->release_hold();
+      ok("disconnect requested");
+      return;
+    }
+    if (tail == "cmd") {
+      // raw pvvx command on 0x1F1F, optional wait for notifications (ms) so simple clients get the answer inline
+      std::string hex;
+      int wait = 0;
+      json::parse_json(body, [&](JsonObject o) { hex = o["hex"] | ""; wait = o["wait"] | 0; return true; });
+      std::vector<uint8_t> payload;
+      for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        char b[3] = {hex[i], hex[i + 1], 0};
+        char *end;
+        long v = strtol(b, &end, 16);
+        if (*end) { bad(400, "INVALID_REQUEST", "bad hex"); return; }
+        payload.push_back((uint8_t) v);
+      }
+      uint32_t since;
+      { LockGuard g(this->mutex_); since = this->notify_seq_; }
+      std::string err;
+      if (!this->queue_raw_command(mac, payload, err)) { bad(409, err.c_str(), "device is not connected (use connect first)"); return; }
+      this->enable_loop_soon_any_context();
+      if (wait > 5000) wait = 5000;
+      uint32_t until = millis() + wait;
+      uint32_t last = since;
+      uint32_t settle = 0;
+      while ((int32_t) (millis() - until) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+        uint32_t cur;
+        { LockGuard g(this->mutex_); cur = this->notify_seq_; }
+        if (cur != last) { last = cur; settle = millis(); }
+        else if (settle && millis() - settle > 150) break;  // notifications stopped arriving
+      }
+      LockGuard g(this->mutex_);
+      this->send_json_(req, 200, this->json_notify_(mac, since));
+      return;
+    }
     if (tail == "alias") {
       std::string alias;
       json::parse_json(body, [&](JsonObject o) { alias = o["alias"] | ""; return true; });
@@ -236,8 +342,8 @@ void XiaomiEspFlasher::handle_post_(AsyncWebServerRequest *req, const std::strin
 
 bool XiaomiEspFlasher::parse_job_from_json_(const std::string &tail, uint64_t mac, const std::string &body, Job &job, std::string &err) {
   job.mac = mac;
-  if (tail == "identify" || tail == "connect") { job.type = JobType::IDENTIFY; return true; }
-  if (tail == "disconnect") { err = "connections are per-job; nothing to disconnect"; return false; }
+  if (tail == "identify") { job.type = JobType::IDENTIFY; return true; }
+  if (tail == "connect") { job.type = JobType::CONNECT; return true; }
   if (tail == "settime") { job.type = JobType::SET_TIME; return true; }
   if (tail == "reboot") { job.type = JobType::REBOOT; return true; }
   if (tail == "defaults") { job.type = JobType::SET_DEFAULTS; return true; }
@@ -532,6 +638,9 @@ std::string XiaomiEspFlasher::json_status_() {
   o["fwstore_capacity"] = this->store_.capacity();
   o["manifest_version"] = this->provider_ ? version_from_bcd(this->provider_->manifest_version()) : "";
   o["remote_manifest"] = this->remote_url_;
+  o["assets_url"] = this->assets_url_;
+  o["manifest_source"] = this->runtime_manifest_.empty() ? "built-in" : "browser (stored)";
+  o["hold_device"] = (this->session_active() && this->job_.type == JobType::CONNECT && this->dev_) ? this->dev_->mac : "";
   o["test_device"] = this->test_mac_ ? format_hex(this->test_mac_) : "";
   o["log_seq"] = this->log_seq_;
   std::string out;

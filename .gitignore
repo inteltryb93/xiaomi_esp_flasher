@@ -4,3 +4,4 @@ yaml/secrets.yaml
 logs/
 reference/
 __pycache__/
+firmware/*.bin

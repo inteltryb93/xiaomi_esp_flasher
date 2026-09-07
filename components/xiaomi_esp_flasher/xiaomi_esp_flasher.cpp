@@ -31,7 +31,7 @@ const char *session_state_name(SessionState s) {
 }
 const char *job_type_name(JobType t) {
   static const char *const N[] = {"none", "identify", "read_config", "write_config", "set_defaults", "set_time",
-                                  "set_name", "set_pin", "reboot", "activate", "flash"};
+                                  "set_name", "set_pin", "reboot", "activate", "flash", "connect"};
   return N[(uint8_t) t];
 }
 
@@ -196,6 +196,7 @@ void XiaomiEspFlasher::setup() {
   this->store_.init();
   this->provider_ = std::make_unique<LocalFirmwareProvider>(this->manifest_json_, this->bundled_, &this->store_);
   this->provider_->setup();
+  this->load_manifest_pref_();
   this->load_known_devices_();
   for (auto &p : this->configured_aliases_) {
     char macs[18];
@@ -475,6 +476,11 @@ bool XiaomiEspFlasher::request_job(const Job &job, std::string &err) {
     err = "DEVICE_NOT_FOUND";
     return false;
   }
+  if (this->session_active() && this->job_.type == JobType::CONNECT) {
+    if (job.type == JobType::CONNECT && this->dev_ && this->dev_->address == job.mac)
+      return true;  // already holding this device
+    this->hold_release_ = true;  // the held link is closed first, then the queued job runs
+  }
   {
     LockGuard g(this->mutex_);
     if (this->job_queue_.size() >= 8) {
@@ -485,6 +491,58 @@ bool XiaomiEspFlasher::request_job(const Job &job, std::string &err) {
   }
   this->enable_loop_soon_any_context();
   return true;
+}
+
+bool XiaomiEspFlasher::hold_active(uint64_t mac) const {
+  return this->state_ == SessionState::READY && this->job_.type == JobType::CONNECT && this->dev_ != nullptr &&
+         this->dev_->address == mac;
+}
+
+bool XiaomiEspFlasher::queue_raw_command(uint64_t mac, const std::vector<uint8_t> &payload, std::string &err) {
+  if (!this->hold_active(mac)) {
+    err = "DEVICE_DISCONNECTED";
+    return false;
+  }
+  if (payload.empty() || payload.size() > 244) {
+    err = "INVALID_REQUEST";
+    return false;
+  }
+  LockGuard g(this->mutex_);
+  if (this->cmd_queue_.size() >= 16) {
+    err = "BUSY";
+    return false;
+  }
+  this->cmd_queue_.push_back(payload);
+  this->hold_last_activity_ = millis();
+  return true;
+}
+
+void XiaomiEspFlasher::load_manifest_pref_() {
+  struct Blob { uint16_t len; char json[3070]; } __attribute__((packed));
+  this->manifest_pref_ = global_preferences->make_preference<Blob>(fnv1_hash("xiaomi_esp_flasher_manifest_v1"));
+  auto *b = new Blob();
+  if (this->manifest_pref_.load(b) && b->len > 10 && b->len <= sizeof(b->json)) {
+    std::string j(b->json, b->len), err;
+    if (this->provider_->set_manifest(j, err))
+      this->runtime_manifest_ = j;
+    else
+      ESP_LOGW(TAG, "stored manifest ignored: %s", err.c_str());
+  }
+  delete b;
+}
+
+bool XiaomiEspFlasher::save_manifest_pref_(const std::string &json) {
+  struct Blob { uint16_t len; char json[3070]; } __attribute__((packed));
+  if (json.size() > sizeof(Blob::json))
+    return false;
+  auto *b = new Blob();
+  memset(b, 0, sizeof(Blob));
+  b->len = json.size();
+  memcpy(b->json, json.data(), json.size());
+  bool ok = this->manifest_pref_.save(b);
+  delete b;
+  if (ok) global_preferences->sync();
+  return ok;
 }
 
 bool XiaomiEspFlasher::request_identify(uint64_t mac, bool from_ha) {
@@ -642,6 +700,39 @@ void XiaomiEspFlasher::loop() {
     this->log("Online firmware check is disabled in this build (remote_manifest not configured)");
 #endif
 
+  // raw command bridge while a CONNECT job holds the link
+  if (this->state_ == SessionState::READY && this->job_.type == JobType::CONNECT && this->dev_ != nullptr) {
+    if (this->hold_release_) {
+      this->hold_release_ = false;
+      this->log("Disconnect requested");
+      this->disconnect_and_finish_(true, "disconnected");
+    } else if (now - this->hold_last_activity_ > 300000) {
+      this->log("Connection idle for 5 min, disconnecting");
+      this->disconnect_and_finish_(true, "idle timeout");
+    } else if (this->client_ && !this->client_->busy()) {
+      std::vector<uint8_t> cmd;
+      bool have = false;
+      {
+        LockGuard g(this->mutex_);
+        if (!this->cmd_queue_.empty()) { cmd = std::move(this->cmd_queue_.front()); this->cmd_queue_.pop_front(); have = true; }
+      }
+      if (have) {
+        if (this->ch_custom_.handle == 0) {
+          this->log("No 0x1F1F characteristic on this device – command dropped");
+        } else {
+          ESP_LOGD(TAG, "-> 1f1f %s", hexs(cmd.data(), cmd.size()).c_str());
+          if (cmd[0] == CMD_ID_CFG || cmd[0] == CMD_ID_CFG_DEF || cmd[0] == CMD_ID_COMFORT || cmd[0] == CMD_ID_TRG ||
+              cmd[0] == CMD_ID_CFS || cmd[0] == CMD_ID_DNAME || cmd[0] == CMD_ID_UTC_TIME)
+            this->logf("Send %s", hexs(cmd.data(), cmd.size()).c_str());
+          bool rsp = this->ch_custom_.props & ESP_GATT_CHAR_PROP_BIT_WRITE;
+          auto data = std::make_shared<std::vector<uint8_t>>(std::move(cmd));
+          this->client_->write(this->ch_custom_.handle, data->data(), data->size(), rsp, [this, data](int st) {
+            if (st != ESP_GATT_OK) this->logf("Write of %02X failed (%d)", (*data)[0], st);
+          });
+        }
+      }
+    }
+  }
   // start next job
   if (!this->session_active()) {
     Job next;
@@ -756,6 +847,7 @@ void XiaomiEspFlasher::start_job_(const Job &job) {
   } else {
     d->status = DeviceStatus::CONNECTING;
   }
+  this->hold_release_ = false;
   this->publish_device_(*d, false);
   this->step_connect_();
 }
@@ -809,6 +901,10 @@ void XiaomiEspFlasher::on_connected_(bool established, int reason) {
   }
   if (this->state_ == SessionState::WRITING || this->state_ == SessionState::ERASING) {
     this->fail_session_(Error::DEVICE_DISCONNECTED, "device disconnected during OTA");
+    return;
+  }
+  if (this->state_ == SessionState::READY && this->job_.type == JobType::CONNECT) {
+    this->finish_session_(true, "link closed by the device (reason " + std::to_string(reason) + ")");
     return;
   }
   if (this->state_ == SessionState::REBOOTING) {
@@ -1010,6 +1106,18 @@ void XiaomiEspFlasher::on_notify_(uint16_t handle, const uint8_t *data, size_t l
   }
   if (handle == this->ch_custom_.handle && len > 0) {
     ESP_LOGD(TAG, "<- 1f1f %s", hexs(data, len).c_str());
+    if (this->dev_ && this->job_.type == JobType::CONNECT && this->state_ == SessionState::READY) {
+      std::string hx = hexs(data, len);
+      uint32_t seq;
+      {
+        LockGuard g(this->mutex_);
+        seq = ++this->notify_seq_;
+        this->notify_.push_back(NotifyLine{seq, this->dev_->address, hx});
+        while (this->notify_.size() > 64) this->notify_.pop_front();
+      }
+      this->emit_event_(std::string("{\"type\":\"notify\",\"mac\":\"") + this->dev_->mac + "\",\"seq\":" + std::to_string(seq) + ",\"hex\":\"" + hx + "\"}");
+      this->hold_last_activity_ = millis();
+    }
     if (this->dev_ && data[0] == CMD_ID_MEASURE) {
       Measurement m;
       if (m.decode(data, len)) {
@@ -1243,6 +1351,25 @@ void XiaomiEspFlasher::continue_after_identify_() {
     case JobType::REBOOT: this->step_reboot_(); break;
     case JobType::ACTIVATE: this->step_activate_(); break;
     case JobType::FLASH: this->step_prepare_ota_(); break;
+    case JobType::CONNECT: {
+      // hold the link for the pvvx-style configuration GUI; commands arrive through queue_raw_command()
+      this->set_state_(SessionState::READY);
+      this->step_deadline_ = 0;
+      this->hold_last_activity_ = millis();
+      this->hold_release_ = false;
+      { LockGuard g(this->mutex_); this->cmd_queue_.clear(); }
+      this->dev_->status = DeviceStatus::CONNECTED;
+      this->log("Connected – configuration channel open (idle timeout 5 min)");
+      if (this->ch_custom_.handle != 0) {
+        // customAction(): "Send cmd (33C8): Query 200 measurements"
+        std::vector<uint8_t> q = {CMD_ID_MEASURE, 0xC8};
+        std::string e;
+        this->queue_raw_command(this->dev_->address, q, e);
+      }
+      this->publish_device_(*this->dev_, false);
+      this->emit_device_event_(*this->dev_);
+      break;
+    }
     default: this->disconnect_and_finish_(true, "done"); break;
   }
 }

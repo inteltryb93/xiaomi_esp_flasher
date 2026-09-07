@@ -82,6 +82,19 @@ bool parse_manifest(const std::string &json, std::vector<ManifestEntry> &out, st
 
 // ------------------------------------------------------------------ LocalFirmwareProvider
 
+bool LocalFirmwareProvider::set_manifest(const std::string &json, std::string &err) {
+  std::vector<ManifestEntry> entries;
+  if (!parse_manifest(json, entries, err))
+    return false;
+  JsonDocument doc = json::parse_json(json);
+  this->manifest_version_ = doc["version"] | 0;
+  this->bundled_ = std::move(entries);
+  this->runtime_manifest_ = json;
+  ESP_LOGI(TAG, "manifest replaced at runtime: version %d (%s), %u entries", this->manifest_version_,
+           version_from_bcd(this->manifest_version_).c_str(), (unsigned) this->bundled_.size());
+  return true;
+}
+
 void LocalFirmwareProvider::setup() {
   std::string err;
   if (!parse_manifest(this->manifest_json_, this->bundled_, err)) {
@@ -134,8 +147,18 @@ std::vector<FirmwareInfo> LocalFirmwareProvider::get_available_firmwares() {
   for (auto &e : this->bundled_) {
     FirmwareInfo fi;
     this->build_info_(e, fi, "bundled:", "bundled");
-    if (fi.size == 0)
-      fi.source = "manifest only (no image bundled)";
+    if (fi.size == 0) {
+      // manifest entry without bytes in the app image: served from the fwstore partition when present there
+      StoredImage img;
+      if (this->store_ != nullptr && this->store_->find(e.name, img)) {
+        fi.id = "store:" + e.name;
+        fi.size = img.hdr.size;
+        fi.crc32 = img.hdr.crc32;
+        fi.source = std::string("stored (") + img.hdr.source + ")";
+      } else {
+        fi.source = "manifest only – download to the ESP32 first";
+      }
+    }
     out.push_back(fi);
   }
   for (auto &e : this->remote_) {
@@ -154,16 +177,24 @@ std::vector<FirmwareInfo> LocalFirmwareProvider::get_available_firmwares() {
     FirmwareInfo fi;
     this->build_info_(e, fi, "remote:", this->remote_base_ + e.file);
     fi.size = 0;  // unknown until downloaded
-    if (this->store_ != nullptr && this->store_->has_image() && e.name == this->store_->header().name) {
-      fi.size = this->store_->header().size;
-      fi.crc32 = this->store_->header().crc32;
+    StoredImage img;
+    if (this->store_ != nullptr && this->store_->find(e.name, img)) {
+      fi.id = "store:" + e.name;
+      fi.size = img.hdr.size;
+      fi.crc32 = img.hdr.crc32;
     }
     out.push_back(fi);
   }
   if (this->store_ != nullptr) {
-    FirmwareInfo fi;
-    if (this->store_->get_info(fi))
+    for (auto &img : this->store_->images()) {
+      bool listed = false;
+      for (auto &fi : out)
+        if (fi.name == img.hdr.name) listed = true;
+      if (listed) continue;
+      FirmwareInfo fi;
+      this->store_->get_info(img, fi);
       out.push_back(fi);
+    }
   }
   return out;
 }
@@ -216,11 +247,12 @@ bool LocalFirmwareProvider::open_image(const std::string &id, ImageReader &reade
     size = img->size;
     return true;
   }
-  if (this->store_ != nullptr && this->store_->has_image()) {
-    std::string nm = this->store_->header().name;
-    if (id == "store:" + nm || id == "remote:" + nm) {
-      reader = this->store_->reader();
-      size = this->store_->header().size;
+  if (this->store_ != nullptr) {
+    std::string nm = id.substr(id.find(':') + 1);
+    StoredImage img;
+    if (this->store_->find(nm, img)) {
+      reader = this->store_->reader(img.slot);
+      size = img.hdr.size;
       return true;
     }
   }
@@ -237,6 +269,7 @@ void LocalFirmwareProvider::set_remote_entries(std::vector<ManifestEntry> entrie
 
 struct DlCtx {
   FirmwareStore *store;
+  std::string name;
   std::string *buf;
   std::string err;
   size_t total;
@@ -273,7 +306,7 @@ static esp_err_t http_event(esp_http_client_event_t *evt) {
   } else if (evt->event_id == HTTP_EVENT_ON_HEADER && ctx != nullptr && ctx->store != nullptr) {
     if (strcasecmp(evt->header_key, "Content-Length") == 0) {
       ctx->total = strtoul(evt->header_value, nullptr, 10);
-      if (!ctx->store->begin_write(ctx->total, ctx->err)) {
+      if (!ctx->store->begin_write(ctx->total, ctx->name, ctx->err)) {
         ctx->failed = true;
         return ESP_FAIL;
       }
@@ -318,14 +351,14 @@ static bool http_get(const std::string &url, DlCtx &ctx, std::string &err) {
 
 bool RemoteGithubFirmwareProvider::fetch_manifest(std::string &json, std::string &err) {
   json.clear();
-  DlCtx ctx{nullptr, &json, "", 0, 0, nullptr, false};
+  DlCtx ctx{nullptr, "", &json, "", 0, 0, nullptr, false};
   ESP_LOGI(TAG, "fetching %s", this->manifest_url_.c_str());
   return http_get(this->manifest_url_, ctx, err);
 }
 
 bool RemoteGithubFirmwareProvider::download_image(const std::string &url, FirmwareStore &store, const ManifestEntry &e,
                                                   std::string &err, const std::function<void(size_t, size_t)> &progress) {
-  DlCtx ctx{&store, nullptr, "", 0, 0, &progress, false};
+  DlCtx ctx{&store, e.name, nullptr, "", 0, 0, &progress, false};
   ESP_LOGI(TAG, "downloading %s", url.c_str());
   if (!http_get(url, ctx, err)) {
     store.abort_write();
